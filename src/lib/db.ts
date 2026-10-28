@@ -9,17 +9,14 @@
  * and pool.query() for multi-result (e.g. CALL sp_create_booking(...)).
  */
 
-// TODO: Phase 1 — implement MariaDB connection pool
-// Required env vars: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
-
 import mysql from 'mysql2/promise';
 
 const pool = mysql.createPool({
-  host: process.env.DB_HOST,
+  host: process.env.DB_HOST!,
   port: Number(process.env.DB_PORT ?? 3306),
-  user: process.env.DB_USER,
+  user: process.env.DB_USER!,
   password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
+  database: process.env.DB_NAME!,
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
