@@ -84,6 +84,43 @@ CREATE TABLE guest (
     CONSTRAINT uq_guest_email UNIQUE (email)
 ) ENGINE=InnoDB;
 
+ALTER TABLE guest ADD COLUMN password_hash VARCHAR(255) NOT NULL DEFAULT '';
+ALTER TABLE guest ADD COLUMN is_synthetic BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE TABLE staff_account (
+    staff_id INT AUTO_INCREMENT PRIMARY KEY,
+    hotel_id INT NULL,
+    full_name VARCHAR(100) NOT NULL,
+    email VARCHAR(100) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    role ENUM('Admin','Staff') NOT NULL,
+    created_on DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_staff_hotel FOREIGN KEY (hotel_id) REFERENCES hotel(hotel_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT uq_staff_email UNIQUE (email),
+    CONSTRAINT chk_staff_role_hotel CHECK ((role = 'Admin' AND hotel_id IS NULL) OR (role = 'Staff' AND hotel_id IS NOT NULL)
+    )
+) ENGINE=InnoDB;
+
+CREATE TABLE sim_clock (
+    clock_id TINYINT PRIMARY KEY DEFAULT 1,
+    virtual_now DATETIME NOT NULL,
+    tick_minutes INT NOT NULL DEFAULT 60,
+    is_running BOOLEAN NOT NULL DEFAULT TRUE,
+    CONSTRAINT chk_single_clock_row CHECK (clock_id = 1)
+) ENGINE=InnoDB;
+
+INSERT INTO sim_clock (clock_id, virtual_now) VALUES (1, NOW());
+
+DELIMITER $$
+CREATE EVENT evt_clock_tick
+ON SCHEDULE EVERY 1 SECOND
+DO
+BEGIN
+    UPDATE sim_clock SET virtual_now = virtual_now + INTERVAL tick_minutes MINUTE
+    WHERE clock_id = 1 AND is_running = TRUE;
+END$$
+DELIMITER ;
+
 -- ============================================================================
 -- SECTION 2: The overbooking engine's own tables
 -- ============================================================================
