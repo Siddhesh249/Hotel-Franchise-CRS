@@ -92,3 +92,16 @@ mariadb -u root -p hotel_crs -e "SELECT * FROM vw_roomtype_overview;"
 
 (`mariadb` and `mysql` are the same client on Fedora's MariaDB packages —
 either works.)
+# Phase 1 quick start
+
+Phase 1 is implemented on the `phase-1-foundation-guest-core` branch. It covers
+guest registration/login, hotel discovery, availability, confirmed/overbooked/
+waitlisted bookings, cancellation and waitlist promotion, simulated payments,
+and hotel-scoped staff room assignment.
+
+1. Create `SQL/hotel_crs_ddl.sql` and then run `SQL/hotel_crs_dml.sql` in MariaDB.
+2. Configure MongoDB using `MONGO_SETUP.md`.
+3. Copy `.env.example` to `.env.local` and set real credentials and `AUTH_SECRET`.
+4. Install dependencies and run `npm run dev`.
+
+The branch is intentionally separate from `main`; it is not merged.
