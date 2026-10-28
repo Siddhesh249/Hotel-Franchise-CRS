@@ -6,16 +6,15 @@
  * Phase 1 — §1.4 Guest booking flow
  */
 
-// TODO: Phase 1 (1.4)
-// 1. requireRole(session, ['Guest'])
-// 2. SELECT b.*, p.payment_status FROM booking b
-//    LEFT JOIN payment p ON p.booking_id = b.booking_id
-//    WHERE b.guest_id = session.sub
-// 3. Return Booking[] with payment_status
-
 import { NextResponse } from 'next/server';
+import pool from '@/lib/db';
+import { currentUser } from '@/lib/request';
+import { requireRole } from '@/lib/authz';
 
 export async function GET() {
-  // TODO: Phase 1 (1.4)
-  return NextResponse.json({ error: { code: 'NOT_IMPLEMENTED', message: 'Phase 1' } }, { status: 501 });
+  const session = await currentUser();
+  const denied = requireRole(session, ['Guest']);
+  if (denied) return denied;
+  const [rows] = await pool.execute<any[]>('SELECT b.*, rt.type_name, h.hotel_name, p.payment_status, p.amount AS paid_amount FROM booking b JOIN room_type rt ON rt.room_type_id = b.room_type_id JOIN hotel h ON h.hotel_id = rt.hotel_id LEFT JOIN payment p ON p.booking_id = b.booking_id WHERE b.guest_id = ? ORDER BY b.booking_date DESC', [Number(session!.sub)]);
+  return NextResponse.json(rows);
 }
