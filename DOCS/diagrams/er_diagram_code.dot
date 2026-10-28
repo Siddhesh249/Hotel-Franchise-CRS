@@ -1,0 +1,186 @@
+/* ============================================================================
+   Hotel Franchise CRS -- Conceptual ER Diagram (Chen notation)
+   Entities = rectangles | Relationships = diamonds | Attributes = ellipses
+   Double-bordered rectangle/diamond = weak entity / identifying relationship
+   Render:  dot -Tpng er_diagram.dot -o er_diagram.png -Gdpi=150
+            dot -Tpdf er_diagram.dot -o er_diagram.pdf
+   Or paste this whole file into https://dreampuf.github.io/GraphvizOnline/
+   or https://edotor.net (free, no login, renders as you type).
+   ============================================================================ */
+
+graph ER {
+    graph [rankdir=LR, splines=true, nodesep=0.45, ranksep=1.3,
+           fontname="Helvetica", bgcolor="white", pad=0.4];
+    node  [fontname="Helvetica"];
+    edge  [fontname="Helvetica", fontsize=10, color="#555555"];
+
+    /* ---------- style templates ---------- */
+    // entity          : node [shape=box, style="filled,bold", fillcolor="#9FC5E8", fontsize=13, fontname="Helvetica-Bold"]
+    // weak entity      : node [shape=box, style="filled,bold", fillcolor="#9FC5E8", peripheries=2, ...]
+    // relationship     : node [shape=diamond, style=filled, fillcolor="#FFD966", fontsize=11]
+    // ident. relation. : node [shape=diamond, style=filled, fillcolor="#FFD966", peripheries=2]
+    // attribute        : node [shape=ellipse, style=filled, fillcolor="#FFF2CC", fontsize=10]
+    // PK attribute     : same as attribute, label is <<U>name</U>> (underlined)
+
+    /* ================= ENTITIES ================= */
+    franchise            [shape=box, style="filled,bold", fillcolor="#9FC5E8", fontsize=13, fontname="Helvetica-Bold", label="franchise"];
+    hotel                [shape=box, style="filled,bold", fillcolor="#9FC5E8", fontsize=13, fontname="Helvetica-Bold", label="hotel"];
+    room_type            [shape=box, style="filled,bold", fillcolor="#9FC5E8", fontsize=13, fontname="Helvetica-Bold", label="room_type"];
+    room                 [shape=box, style="filled,bold", fillcolor="#9FC5E8", fontsize=13, fontname="Helvetica-Bold", label="room"];
+    guest                [shape=box, style="filled,bold", fillcolor="#9FC5E8", fontsize=13, fontname="Helvetica-Bold", label="guest"];
+    overbooking_policy   [shape=box, style="filled,bold", fillcolor="#9FC5E8", fontsize=13, fontname="Helvetica-Bold", label="overbooking_policy"];
+    booking              [shape=box, style="filled,bold", fillcolor="#9FC5E8", fontsize=13, fontname="Helvetica-Bold", label="booking"];
+
+    /* weak entities -- existence-dependent on another entity */
+    room_type_inventory  [shape=box, style="filled,bold", fillcolor="#9FC5E8", peripheries=2, fontsize=13, fontname="Helvetica-Bold", label="room_type_inventory"];
+    room_assignment      [shape=box, style="filled,bold", fillcolor="#9FC5E8", peripheries=2, fontsize=13, fontname="Helvetica-Bold", label="room_assignment"];
+    payment              [shape=box, style="filled,bold", fillcolor="#9FC5E8", peripheries=2, fontsize=13, fontname="Helvetica-Bold", label="payment"];
+    cancellation_history [shape=box, style="filled,bold", fillcolor="#9FC5E8", peripheries=2, fontsize=13, fontname="Helvetica-Bold", label="cancellation_history"];
+
+    /* ================= RELATIONSHIPS ================= */
+    rel_has        [shape=diamond, style=filled, fillcolor="#FFD966", fontsize=11, label="HAS"];
+    rel_offers     [shape=diamond, style=filled, fillcolor="#FFD966", fontsize=11, label="OFFERS"];
+    rel_contains   [shape=diamond, style=filled, fillcolor="#FFD966", fontsize=11, label="CONTAINS"];
+    rel_categorize [shape=diamond, style=filled, fillcolor="#FFD966", fontsize=11, label="CATEGORIZES"];
+    rel_governs    [shape=diamond, style=filled, fillcolor="#FFD966", fontsize=11, label="GOVERNED_BY"];
+    rel_makes      [shape=diamond, style=filled, fillcolor="#FFD966", fontsize=11, label="MAKES"];
+    rel_reserves   [shape=diamond, style=filled, fillcolor="#FFD966", fontsize=11, label="RESERVED_AS"];
+    rel_assigned   [shape=diamond, style=filled, fillcolor="#FFD966", fontsize=11, label="ASSIGNED_TO"];
+
+    /* identifying relationships (feed a weak entity) -- double diamond */
+    rel_tracked [shape=diamond, style=filled, fillcolor="#FFD966", peripheries=2, fontsize=11, label="TRACKED_IN"];
+    rel_results [shape=diamond, style=filled, fillcolor="#FFD966", peripheries=2, fontsize=11, label="RESULTS_IN"];
+    rel_paid    [shape=diamond, style=filled, fillcolor="#FFD966", peripheries=2, fontsize=11, label="PAID_VIA"];
+    rel_logged  [shape=diamond, style=filled, fillcolor="#FFD966", peripheries=2, fontsize=11, label="LOGGED_AS"];
+
+    /* ================= ATTRIBUTES ================= */
+    node [shape=ellipse, style=filled, fillcolor="#FFF2CC", fontsize=10];
+
+    // franchise
+    franchise__id       [label=<<U>franchise_id</U>>];
+    franchise__name     [label="franchise_name"];
+    franchise__hq       [label="headquarters_city"];
+    franchise__year     [label="founded_year"];
+    franchise -- franchise__id; franchise -- franchise__name;
+    franchise -- franchise__hq; franchise -- franchise__year;
+
+    // hotel
+    hotel__id       [label=<<U>hotel_id</U>>];
+    hotel__name     [label="hotel_name"];
+    hotel__city     [label="city"];
+    hotel__state    [label="state"];
+    hotel__address  [label="address"];
+    hotel__star     [label="star_rating"];
+    hotel__contact  [label="contact_number"];
+    hotel -- hotel__id; hotel -- hotel__name; hotel -- hotel__city;
+    hotel -- hotel__state; hotel -- hotel__address; hotel -- hotel__star; hotel -- hotel__contact;
+
+    // room_type
+    rt__id       [label=<<U>room_type_id</U>>];
+    rt__name     [label="type_name"];
+    rt__price    [label="base_price"];
+    rt__occ      [label="max_occupancy"];
+    rt__total    [label="total_rooms"];
+    room_type -- rt__id; room_type -- rt__name; room_type -- rt__price;
+    room_type -- rt__occ; room_type -- rt__total;
+
+    // room
+    room__id      [label=<<U>room_id</U>>];
+    room__number  [label="room_number"];
+    room__floor   [label="floor_number"];
+    room__status  [label="room_status"];
+    room -- room__id; room -- room__number; room -- room__floor; room -- room__status;
+
+    // guest
+    guest__id        [label=<<U>guest_id</U>>];
+    guest__fname      [label="first_name"];
+    guest__lname      [label="last_name"];
+    guest__email      [label="email"];
+    guest__phone      [label="phone"];
+    guest__address    [label="address"];
+    guest__registered [label="registered_on"];
+    guest -- guest__id; guest -- guest__fname; guest -- guest__lname;
+    guest -- guest__email; guest -- guest__phone; guest -- guest__address; guest -- guest__registered;
+
+    // overbooking_policy
+    op__id      [label=<<U>policy_id</U>>];
+    op__pct     [label="overbook_percentage"];
+    op__updated [label="updated_on"];
+    overbooking_policy -- op__id; overbooking_policy -- op__pct; overbooking_policy -- op__updated;
+
+    // room_type_inventory (weak)
+    rti__id     [label=<<U>inventory_id</U>>];
+    rti__date   [label="stay_date"];
+    rti__count  [label="booked_count"];
+    room_type_inventory -- rti__id; room_type_inventory -- rti__date; room_type_inventory -- rti__count;
+
+    // booking
+    bk__id        [label=<<U>booking_id</U>>];
+    bk__checkin   [label="check_in_date"];
+    bk__checkout  [label="check_out_date"];
+    bk__guests    [label="num_guests"];
+    bk__status    [label="booking_status"];
+    bk__overbook  [label="is_overbooked"];
+    bk__date      [label="booking_date"];
+    bk__amount    [label="total_amount"];
+    booking -- bk__id; booking -- bk__checkin; booking -- bk__checkout; booking -- bk__guests;
+    booking -- bk__status; booking -- bk__overbook; booking -- bk__date; booking -- bk__amount;
+
+    // room_assignment (weak)
+    ra__id       [label=<<U>assignment_id</U>>];
+    ra__assigned [label="assigned_on"];
+    room_assignment -- ra__id; room_assignment -- ra__assigned;
+
+    // payment (weak)
+    pay__id      [label=<<U>payment_id</U>>];
+    pay__amount  [label="amount"];
+    pay__date    [label="payment_date"];
+    pay__method  [label="payment_method"];
+    pay__status  [label="payment_status"];
+    payment -- pay__id; payment -- pay__amount; payment -- pay__date; payment -- pay__method; payment -- pay__status;
+
+    // cancellation_history (weak)
+    ch__id      [label=<<U>cancellation_id</U>>];
+    ch__date    [label="cancelled_on"];
+    ch__reason  [label="cancellation_reason"];
+    ch__refund  [label="refund_amount"];
+    cancellation_history -- ch__id; cancellation_history -- ch__date;
+    cancellation_history -- ch__reason; cancellation_history -- ch__refund;
+
+    /* ================= RELATIONSHIP CONNECTIONS + CARDINALITY ================= */
+    franchise -- rel_has        [label="1"];
+    rel_has -- hotel             [label="N"];
+
+    hotel -- rel_offers          [label="1"];
+    rel_offers -- room_type      [label="N"];
+
+    hotel -- rel_contains        [label="1"];
+    rel_contains -- room         [label="N"];
+
+    room_type -- rel_categorize  [label="1"];
+    rel_categorize -- room       [label="N"];
+
+    room_type -- rel_governs     [label="1"];
+    rel_governs -- overbooking_policy [label="0..1"];
+
+    room_type -- rel_tracked     [label="1"];
+    rel_tracked -- room_type_inventory [label="N"];
+
+    guest -- rel_makes           [label="1"];
+    rel_makes -- booking         [label="N"];
+
+    room_type -- rel_reserves    [label="1"];
+    rel_reserves -- booking      [label="N"];
+
+    booking -- rel_results       [label="0..1"];
+    rel_results -- room_assignment [label="1"];
+
+    room -- rel_assigned         [label="1"];
+    rel_assigned -- room_assignment [label="N"];
+
+    booking -- rel_paid          [label="1"];
+    rel_paid -- payment          [label="N"];
+
+    booking -- rel_logged        [label="1"];
+    rel_logged -- cancellation_history [label="N"];
+}

@@ -1,0 +1,128 @@
+// Hotel Franchise Central Reservation System (CRS) with Overbooking Logic
+// Paste this whole file into https://dbdiagram.io -> New Diagram
+// (replace the boilerplate demo text completely with this)
+
+Table franchise {
+  franchise_id      int [pk, increment]
+  franchise_name    varchar [unique, not null]
+  headquarters_city varchar
+  founded_year      int
+}
+
+Table hotel {
+  hotel_id       int [pk, increment]
+  franchise_id   int [not null]
+  hotel_name     varchar [not null]
+  city           varchar [not null]
+  state          varchar
+  address        varchar
+  star_rating    int
+  contact_number varchar
+
+  Note: 'UNIQUE(hotel_name, city)'
+}
+
+Table room_type {
+  room_type_id  int [pk, increment]
+  hotel_id      int [not null]
+  type_name     varchar [not null]
+  base_price    decimal [not null]
+  max_occupancy int [default: 2]
+  total_rooms   int [not null]
+
+  Note: 'UNIQUE(hotel_id, type_name). total_rooms = physical capacity.'
+}
+
+Table room {
+  room_id       int [pk, increment]
+  hotel_id      int [not null]
+  room_type_id  int [not null]
+  room_number   varchar [not null]
+  floor_number  int
+  room_status   varchar [note: 'Available / Maintenance / OutOfService']
+
+  Note: 'UNIQUE(hotel_id, room_number). hotel_id kept here deliberately (small denormalization) to enforce per-hotel room numbering without a join.'
+}
+
+Table guest {
+  guest_id      int [pk, increment]
+  first_name    varchar [not null]
+  last_name     varchar [not null]
+  email         varchar [unique, not null]
+  phone         varchar [not null]
+  address       varchar
+  registered_on date
+}
+
+Table overbooking_policy {
+  policy_id           int [pk, increment]
+  room_type_id         int [unique, not null]
+  overbook_percentage  decimal [default: 0]
+  updated_on           datetime
+
+  Note: 'One policy row per room_type. % of total_rooms allowed to be sold beyond physical capacity.'
+}
+
+Table room_type_inventory {
+  inventory_id  bigint [pk, increment]
+  room_type_id  int [not null]
+  stay_date     date [not null]
+  booked_count  int [default: 0]
+
+  Note: 'UNIQUE(room_type_id, stay_date). Per-night ledger -- the source of truth the overbooking logic reads and locks.'
+}
+
+Table booking {
+  booking_id     int [pk, increment]
+  guest_id       int [not null]
+  room_type_id   int [not null]
+  check_in_date  date [not null]
+  check_out_date date [not null]
+  num_guests     int [default: 1]
+  booking_status varchar [note: 'Confirmed / Waitlisted / CheckedIn / CheckedOut / Cancelled / NoShow']
+  is_overbooked  boolean [default: false]
+  booking_date   datetime
+  total_amount   decimal
+
+  Note: 'CHECK(check_out_date > check_in_date)'
+}
+
+Table room_assignment {
+  assignment_id int [pk, increment]
+  booking_id    int [unique, not null]
+  room_id       int [not null]
+  assigned_on   datetime
+
+  Note: 'The hard, physical layer: a trigger blocks two overlapping-date assignments to the same room_id.'
+}
+
+Table payment {
+  payment_id     int [pk, increment]
+  booking_id     int [not null]
+  amount         decimal [not null]
+  payment_date   datetime
+  payment_method varchar [note: 'Card / Cash / UPI / NetBanking']
+  payment_status varchar [note: 'Pending / Completed / Refunded / Failed']
+}
+
+Table cancellation_history {
+  cancellation_id     int [pk, increment]
+  booking_id          int [not null]
+  cancelled_on        datetime
+  cancellation_reason varchar
+  refund_amount       decimal [default: 0]
+}
+
+// ---------------------------- Relationships ----------------------------
+Ref: hotel.franchise_id > franchise.franchise_id
+Ref: room_type.hotel_id > hotel.hotel_id
+Ref: room.hotel_id > hotel.hotel_id
+Ref: room.room_type_id > room_type.room_type_id
+Ref: overbooking_policy.room_type_id - room_type.room_type_id
+Ref: room_type_inventory.room_type_id > room_type.room_type_id
+Ref: booking.guest_id > guest.guest_id
+Ref: booking.room_type_id > room_type.room_type_id
+Ref: room_assignment.booking_id - booking.booking_id
+Ref: room_assignment.room_id > room.room_id
+Ref: payment.booking_id > booking.booking_id
+Ref: cancellation_history.booking_id > booking.booking_id
