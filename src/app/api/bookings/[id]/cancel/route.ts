@@ -11,19 +11,24 @@
  * Phase 1 — §1.4 Guest booking flow
  */
 
-// TODO: Phase 1 (1.4)
-// 1. requireRole(session, ['Guest'])
-// 2. Fetch booking to get guest_id; requireOwnership(session, booking.guest_id)
-// 3. CALL sp_cancel_booking(booking_id, reason)
-// 4. Return success (promotion happens automatically inside the stored procedure)
-
 import { NextRequest, NextResponse } from 'next/server';
+import pool from '@/lib/db';
+import { currentUser } from '@/lib/request';
+import { apiError, requireOwnership, requireRole } from '@/lib/authz';
 
 export async function POST(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const { id } = await params;
-  void id; // TODO: Phase 1 (1.4)
-  return NextResponse.json({ error: { code: 'NOT_IMPLEMENTED', message: 'Phase 1' } }, { status: 501 });
+  const session = await currentUser();
+  const denied = requireRole(session, ['Guest']);
+  if (denied) return denied;
+  const bookingId = Number((await params).id);
+  const [bookings] = await pool.execute<any[]>('SELECT guest_id FROM booking WHERE booking_id = ?', [bookingId]);
+  if (!bookings.length) return apiError('NOT_FOUND', 'Booking not found', 404);
+  const owned = requireOwnership(session, bookings[0].guest_id);
+  if (owned) return owned;
+  const body = await _req.json().catch(() => ({}));
+  await pool.query('CALL sp_cancel_booking(?, ?)', [bookingId, String(body.reason ?? 'Guest cancellation')]);
+  return NextResponse.json({ cancelled: true, booking_id: bookingId });
 }

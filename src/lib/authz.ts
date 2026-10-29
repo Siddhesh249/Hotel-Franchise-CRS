@@ -12,9 +12,6 @@
  * Returning a 401/403 Response object short-circuits the handler.
  */
 
-// TODO: Phase 1 (1.2) — implement requireRole and requireOwnership
-// These will use the `auth()` helper from ./auth to read the active session.
-
 import { NextResponse } from 'next/server';
 
 export type Role = 'Guest' | 'Staff' | 'Admin';
@@ -43,12 +40,16 @@ export function apiError(
  * @returns null if authorized, or a 401/403 NextResponse to return early.
  */
 export function requireRole(
-  _session: SessionUser | null,
-  _allowedRoles: Role[],
-  _opts?: { sameHotel?: boolean; hotelId?: number },
+  session: SessionUser | null,
+  allowedRoles: Role[],
+  opts?: { sameHotel?: boolean; hotelId?: number },
 ): NextResponse | null {
-  // TODO: Phase 1 (1.2)
-  throw new Error('Not implemented — Phase 1');
+  if (!session) return apiError('UNAUTHENTICATED', 'Sign in is required', 401);
+  if (!allowedRoles.includes(session.role)) return apiError('FORBIDDEN', 'You do not have permission for this resource', 403);
+  if (opts?.sameHotel && session.role === 'Staff' && opts.hotelId !== undefined && session.hotelId !== opts.hotelId) {
+    return apiError('FORBIDDEN', 'This staff account is restricted to its assigned hotel', 403);
+  }
+  return null;
 }
 
 /**
@@ -56,9 +57,10 @@ export function requireRole(
  * @returns null if authorized, or a 403 NextResponse to return early.
  */
 export function requireOwnership(
-  _session: SessionUser | null,
-  _ownerGuestId: number,
+  session: SessionUser | null,
+  ownerGuestId: number,
 ): NextResponse | null {
-  // TODO: Phase 1 (1.2)
-  throw new Error('Not implemented — Phase 1');
+  if (!session) return apiError('UNAUTHENTICATED', 'Sign in is required', 401);
+  if (session.role !== 'Guest' || Number(session.sub) !== ownerGuestId) return apiError('FORBIDDEN', 'You can only access your own bookings', 403);
+  return null;
 }

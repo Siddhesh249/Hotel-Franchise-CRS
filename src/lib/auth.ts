@@ -14,40 +14,52 @@
  *   - staff_account table (password_hash column)
  */
 
-// TODO: Phase 1 — implement Auth.js credentials provider
-// Required env vars: AUTH_SECRET, NEXTAUTH_URL
-
 import NextAuth from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
+import bcrypt from 'bcryptjs';
+import pool from '@/lib/db';
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   providers: [
     Credentials({
-      // TODO: Phase 1 (1.2) — validate against guest / staff_account tables
-      // 1. Look up email in guest table; if found, bcrypt.compare password_hash
-      // 2. Else look up email in staff_account table; bcrypt.compare password_hash
-      // 3. Return JWT payload with actorType, role, hotelId
       name: 'Credentials',
       credentials: {
         email: { label: 'Email', type: 'email' },
         password: { label: 'Password', type: 'password' },
       },
-      async authorize(_credentials) {
-        throw new Error('Not implemented — Phase 1');
+      async authorize(credentials) {
+        const email = String(credentials?.email ?? '').trim().toLowerCase();
+        const password = String(credentials?.password ?? '');
+        if (!email || !password) return null;
+        const [guests] = await pool.execute<any[]>('SELECT guest_id, email, password_hash FROM guest WHERE email = ?', [email]);
+        if (guests.length) {
+          const guest = guests[0];
+          if (!(await bcrypt.compare(password, guest.password_hash))) return null;
+          return { id: String(guest.guest_id), actorType: 'guest', role: 'Guest', hotelId: null };
+        }
+        const [staff] = await pool.execute<any[]>('SELECT staff_id, email, password_hash, role, hotel_id FROM staff_account WHERE email = ?', [email]);
+        if (!staff.length || !(await bcrypt.compare(password, staff[0].password_hash))) return null;
+        return { id: String(staff[0].staff_id), actorType: 'staff', role: staff[0].role, hotelId: staff[0].hotel_id };
       },
     }),
   ],
   callbacks: {
-    // TODO: Phase 1 (1.2) — persist actorType, role, hotelId into the JWT
     async jwt({ token, user }) {
       if (user) {
-        // user is the object returned by authorize()
-        // attach custom claims here
+        token.actorType = (user as any).actorType;
+        token.role = (user as any).role;
+        token.hotelId = (user as any).hotelId;
       }
       return token;
     },
     async session({ session, token }) {
-      // TODO: Phase 1 (1.2) — surface JWT claims on session.user
+      if (session.user) {
+        const user = session.user as typeof session.user & { actorType?: string; role?: string; hotelId?: number | null };
+        user.actorType = token.actorType as string;
+        user.role = token.role as string;
+        user.hotelId = token.hotelId as number | null;
+        user.id = token.sub as string;
+      }
       return session;
     },
   },

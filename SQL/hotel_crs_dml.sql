@@ -5,6 +5,9 @@
 
 USE hotel_crs;
 
+-- Replace these development hashes before production deployment.
+UPDATE guest SET password_hash = '$2b$12$wJY9Yx6Qm7v1QfGZ8f5dOeYx1m5w1n0J4R4w2i8j8p4u7n3g6c2' WHERE password_hash = '';
+
 -- ----------------------------------------------------------------------------
 -- Franchise + two properties under it
 -- ----------------------------------------------------------------------------
@@ -14,6 +17,10 @@ INSERT INTO franchise (franchise_name, headquarters_city, founded_year) VALUES
 INSERT INTO hotel (franchise_id, hotel_name, city, state, address, star_rating, contact_number) VALUES
 (1, 'Nightingale Suites - Koramangala', 'Bengaluru', 'Karnataka', '4th Block, Koramangala', 4, '08041234567'),
 (1, 'Nightingale Suites - Andheri',     'Mumbai',    'Maharashtra', 'Andheri East, MIDC',    4, '02241234567');
+
+INSERT INTO staff_account (hotel_id, full_name, email, password_hash, role) VALUES
+(1, 'Koramangala Front Desk', 'staff.koramangala@example.com', '$2b$12$wJY9Yx6Qm7v1QfGZ8f5dOeYx1m5w1n0J4R4w2i8j8p4u7n3g6c2', 'Staff'),
+(NULL, 'Franchise Administrator', 'admin@example.com', '$2b$12$wJY9Yx6Qm7v1QfGZ8f5dOeYx1m5w1n0J4R4w2i8j8p4u7n3g6c2', 'Admin');
 
 -- ----------------------------------------------------------------------------
 -- Room types (room_type_id 1-3 = Koramangala, 4-6 = Andheri)

@@ -7,15 +7,16 @@
  * Phase 1 — §1.5 Staff portal
  */
 
-// TODO: Phase 1 (1.5)
-// 1. requireRole(session, ['Staff'], { sameHotel: true })
-// 2. SELECT bookings WHERE room_type.hotel_id = session.hotelId
-//    ordered by check_in_date ASC
-// 3. Return Booking[]
-
 import { NextResponse } from 'next/server';
+import pool from '@/lib/db';
+import { currentUser } from '@/lib/request';
+import { apiError, requireRole } from '@/lib/authz';
 
 export async function GET() {
-  // TODO: Phase 1 (1.5)
-  return NextResponse.json({ error: { code: 'NOT_IMPLEMENTED', message: 'Phase 1' } }, { status: 501 });
+  const session = await currentUser();
+  const denied = requireRole(session, ['Staff']);
+  if (denied) return denied;
+  if (!session?.hotelId) return apiError('FORBIDDEN', 'Staff account has no hotel scope', 403);
+  const [rows] = await pool.execute<any[]>('SELECT b.*, g.first_name, g.last_name, g.email, rt.type_name, h.hotel_name, r.room_number FROM booking b JOIN guest g ON g.guest_id = b.guest_id JOIN room_type rt ON rt.room_type_id = b.room_type_id JOIN hotel h ON h.hotel_id = rt.hotel_id LEFT JOIN room_assignment ra ON ra.booking_id = b.booking_id LEFT JOIN room r ON r.room_id = ra.room_id WHERE rt.hotel_id = ? ORDER BY b.check_in_date ASC', [session.hotelId]);
+  return NextResponse.json(rows);
 }

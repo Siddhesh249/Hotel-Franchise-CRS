@@ -13,16 +13,27 @@
  * Phase 1 — §1.5 Staff portal
  */
 
-// TODO: Phase 1 (1.5)
-// 1. requireRole(session, ['Staff'])
-// 2. Verify room belongs to session.hotelId
-// 3. INSERT INTO room_assignment (booking_id, room_id, assigned_on) VALUES (?, ?, NOW())
-// 4. Catch mysql2 error where sqlState === '45000' → return 409 "Room already occupied for these dates"
-// 5. Return { assignment_id } with 201
-
 import { NextRequest, NextResponse } from 'next/server';
+import pool from '@/lib/db';
+import { currentUser, errorCode } from '@/lib/request';
+import { apiError, requireRole } from '@/lib/authz';
 
-export async function POST(_req: NextRequest) {
-  // TODO: Phase 1 (1.5)
-  return NextResponse.json({ error: { code: 'NOT_IMPLEMENTED', message: 'Phase 1' } }, { status: 501 });
+export async function POST(req: NextRequest) {
+  const session = await currentUser();
+  const denied = requireRole(session, ['Staff']);
+  if (denied) return denied;
+  if (!session?.hotelId) return apiError('FORBIDDEN', 'Staff account has no hotel scope', 403);
+  const body = await req.json().catch(() => null);
+  const bookingId = Number(body?.booking_id);
+  const roomId = Number(body?.room_id);
+  if (!Number.isInteger(bookingId) || !Number.isInteger(roomId)) return apiError('VALIDATION_ERROR', 'booking_id and room_id are required', 400);
+  const [scope] = await pool.execute<any[]>('SELECT b.booking_id FROM booking b JOIN room_type rt ON rt.room_type_id = b.room_type_id JOIN room r ON r.room_id = ? WHERE b.booking_id = ? AND rt.hotel_id = ? AND r.hotel_id = rt.hotel_id', [roomId, bookingId, session.hotelId]);
+  if (!scope.length) return apiError('FORBIDDEN', 'The booking or room is outside your hotel', 403);
+  try {
+    const [result] = await pool.execute<any>('INSERT INTO room_assignment (booking_id, room_id) VALUES (?, ?)', [bookingId, roomId]);
+    return NextResponse.json({ assignment_id: result.insertId }, { status: 201 });
+  } catch (error) {
+    if (errorCode(error) === '45000') return apiError('ROOM_UNAVAILABLE', 'Room already occupied for these dates', 409);
+    return apiError('DATABASE_ERROR', 'Room assignment could not be completed', 409);
+  }
 }

@@ -7,19 +7,21 @@
  * See ARCHITECTURE.md §9 and §4.2.
  */
 
-// TODO: Phase 1 (1.3)
-// 1. Parse hotel_id from params
-// 2. Query MariaDB: hotel row + room_type rows for that hotel
-// 3. Fetch hotel_features doc from MongoDB by hotel_id
-// 4. Merge and return combined object
-
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
+import pool from '@/lib/db';
+import clientPromise from '@/lib/mongodb';
 
 export async function GET(
-  _req: NextRequest,
+  _req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  void id; // TODO: Phase 1 (1.3) — use id to query DB
-  return NextResponse.json({ error: { code: 'NOT_IMPLEMENTED', message: 'Phase 1' } }, { status: 501 });
+  const hotelId = Number(id);
+  if (!Number.isInteger(hotelId)) return NextResponse.json({ error: { code: 'VALIDATION_ERROR', message: 'Invalid hotel id' } }, { status: 400 });
+  const [hotels] = await pool.execute<any[]>('SELECT * FROM hotel WHERE hotel_id = ?', [hotelId]);
+  if (!hotels.length) return NextResponse.json({ error: { code: 'NOT_FOUND', message: 'Hotel not found' } }, { status: 404 });
+  const [rooms] = await pool.execute<any[]>('SELECT * FROM room_type WHERE hotel_id = ? ORDER BY base_price', [hotelId]);
+  let features = null;
+  try { const client = await clientPromise; features = await client.db(process.env.MONGODB_DB ?? 'hotel_crs').collection('hotel_features').findOne({ hotel_id: hotelId }); } catch { /* optional */ }
+  return NextResponse.json({ ...hotels[0], room_types: rooms, features });
 }
