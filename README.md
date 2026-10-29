@@ -92,16 +92,54 @@ mariadb -u root -p hotel_crs -e "SELECT * FROM vw_roomtype_overview;"
 
 (`mariadb` and `mysql` are the same client on Fedora's MariaDB packages —
 either works.)
-# Phase 1 quick start
+# Run the complete project
 
-Phase 1 is implemented on the `phase-1-foundation-guest-core` branch. It covers
-guest registration/login, hotel discovery, availability, confirmed/overbooked/
-waitlisted bookings, cancellation and waitlist promotion, simulated payments,
-and hotel-scoped staff room assignment.
+The application includes the guest booking flow, hotel-scoped staff operations,
+and the Phase 2 admin control plane: catalog and buffer management, MongoDB
+amenities, reports, the virtual clock, and a synthetic-traffic simulator.
 
-1. Create `SQL/hotel_crs_ddl.sql` and then run `SQL/hotel_crs_dml.sql` in MariaDB.
-2. Configure MongoDB using `MONGO_SETUP.md`.
-3. Copy `.env.example` to `.env.local` and set real credentials and `AUTH_SECRET`.
-4. Install dependencies and run `npm run dev`.
+1. Install dependencies:
 
-The branch is intentionally separate from `main`; it is not merged.
+   ```bash
+   npm install
+   ```
+
+2. Create the database and load its schema and sample data. The DDL creates the
+   clock table and `evt_clock_tick` event used by the admin clock.
+
+   ```bash
+   mariadb -u root -p < SQL/hotel_crs_ddl.sql
+   mariadb -u root -p < SQL/hotel_crs_dml.sql
+   ```
+
+3. Enable MariaDB's event scheduler (add `event_scheduler=ON` to MariaDB's
+   server configuration as well if it should survive a database restart):
+
+   ```bash
+   mariadb -u root -p -e "SET GLOBAL event_scheduler = ON;"
+   ```
+
+4. Set up MongoDB's `hotel_features` collection and unique index using the
+   commands in [MONGO_SETUP.md](MONGO_SETUP.md).
+
+5. Copy the environment template and fill in working database credentials and a
+   long random Auth.js secret:
+
+   ```bash
+   cp .env.example .env.local
+   ```
+
+6. Start the development server:
+
+   ```bash
+   npm run dev
+   ```
+
+   Open [http://localhost:3000](http://localhost:3000). Sign in with an Admin
+   account provisioned in `staff_account` to use `/admin`, `/admin/clock`, and
+   `/admin/simulation`. The simulator is intentionally process-local, so run it
+   with the persistent Node development/production server rather than a
+   serverless deployment.
+
+For a production run, validate with `npx tsc --noEmit`, build with `npm run build`,
+and start with `npm start`.
