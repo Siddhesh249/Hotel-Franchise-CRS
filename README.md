@@ -112,6 +112,13 @@ amenities, reports, the virtual clock, and a synthetic-traffic simulator.
    mariadb -u root -p < SQL/hotel_crs_dml.sql
    ```
 
+   If an earlier, failed schema import left a partial local `hotel_crs`
+   database, remove that disposable database before rerunning the imports:
+
+   ```bash
+   mariadb -u root -p -e "DROP DATABASE IF EXISTS hotel_crs;"
+   ```
+
 3. Enable MariaDB's event scheduler (add `event_scheduler=ON` to MariaDB's
    server configuration as well if it should survive a database restart):
 

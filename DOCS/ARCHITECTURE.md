@@ -142,11 +142,7 @@ CREATE TABLE staff_account (
     created_on      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_staff_hotel FOREIGN KEY (hotel_id)
         REFERENCES hotel(hotel_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT uq_staff_email UNIQUE (email),
-    CONSTRAINT chk_staff_role_hotel CHECK (
-        (role = 'Admin' AND hotel_id IS NULL) OR
-        (role = 'Staff' AND hotel_id IS NOT NULL)
-    )
+    CONSTRAINT uq_staff_email UNIQUE (email)
 ) ENGINE=InnoDB;
 
 -- Guest self-service login + simulation tagging.
@@ -164,6 +160,11 @@ CREATE TABLE sim_clock (
 
 INSERT INTO sim_clock (clock_id, virtual_now) VALUES (1, NOW());
 ```
+
+`trg_staff_account_scope_insert` and `trg_staff_account_scope_update` enforce
+the Admin/Staff `hotel_id` rule. This is deliberately a trigger rather than a
+`CHECK`: MariaDB 11.8 rejects this `CHECK` over a foreign-key column when it
+uses `ON UPDATE CASCADE`.
 
 **Virtual-clock event (see §5 for full discussion):**
 
