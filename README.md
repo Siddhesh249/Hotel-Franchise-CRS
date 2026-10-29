@@ -37,10 +37,9 @@ is already built and is **not** being redesigned:
   overbooking/waitlist/promotion flow.
 - `hotel_crs_schema.dbml` — paste into dbdiagram.io for the ER diagram.
 
-Everything described in `ARCHITECTURE.md` beyond this — the `staff_account` and
-`sim_clock` tables, the `hotel_features` MongoDB collection, auth, the Next.js
-app, and the simulation engine — planned but not yet built. `IMPLEMENTATION_PHASES.md` 
-is the build order for it.
+The application layer is complete: it includes the `staff_account` and
+`sim_clock` schema additions, MongoDB amenities, credentials authentication,
+guest/staff/admin portals, reporting, and the simulation engine.
 
 ## Why the schema design looks the way it does
 
@@ -81,64 +80,100 @@ is the build order for it.
 - **Version control:** Git + GitHub, commit history expected to show both team
   members' individual contributions.
 
-## Running the existing SQL core on Fedora 44 + MariaDB
-
-```bash
-sudo systemctl start mariadb        # if it isn't already running
-mariadb -u root -p < hotel_crs_ddl.sql
-mariadb -u root -p < hotel_crs_dml.sql
-mariadb -u root -p hotel_crs -e "SELECT * FROM vw_roomtype_overview;"
-```
-
-(`mariadb` and `mysql` are the same client on Fedora's MariaDB packages —
-either works.)
-# Run the complete project
+## Setup and run
 
 The application includes the guest booking flow, hotel-scoped staff operations,
 and the Phase 2 admin control plane: catalog and buffer management, MongoDB
 amenities, reports, the virtual clock, and a synthetic-traffic simulator.
 
-1. Install dependencies:
+These commands assume MariaDB, MongoDB, Node.js, and npm are already installed.
+Run the MariaDB and MongoDB blocks in a normal terminal from the repository
+root. The MongoDB block is run with `mongosh`—it is **not** a MariaDB command.
+
+1. Start both database services and install Node dependencies:
 
    ```bash
+   sudo systemctl enable --now mariadb
+   sudo systemctl enable --now mongod
    npm install
    ```
 
-2. Create the database and load its schema and sample data. The DDL creates the
-   clock table and `evt_clock_tick` event used by the admin clock.
+2. Reset and create the local development database, then load the schema and
+   sample data. The reset is safe only when `hotel_crs` is a disposable local
+   development database—it deletes all of its data.
 
    ```bash
-   mariadb -u root -p < SQL/hotel_crs_ddl.sql
-   mariadb -u root -p < SQL/hotel_crs_dml.sql
+   sudo mariadb -e "DROP DATABASE IF EXISTS hotel_crs;"
+   sudo mariadb < SQL/hotel_crs_ddl.sql
+   sudo mariadb < SQL/hotel_crs_dml.sql
    ```
 
-   If an earlier, failed schema import left a partial local `hotel_crs`
-   database, remove that disposable database before rerunning the imports:
+3. Create the application database user. Replace `choose-a-strong-password`
+   with a password you will also put in `.env.local`. Both hosts are created so
+   the application works whether its MariaDB connection resolves to `127.0.0.1`
+   or `localhost`.
 
    ```bash
-   mariadb -u root -p -e "DROP DATABASE IF EXISTS hotel_crs;"
+   sudo mariadb <<'SQL'
+   CREATE USER IF NOT EXISTS 'hotel_crs_app'@'127.0.0.1' IDENTIFIED BY 'choose-a-strong-password';
+   CREATE USER IF NOT EXISTS 'hotel_crs_app'@'localhost' IDENTIFIED BY 'choose-a-strong-password';
+   GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE, EVENT ON hotel_crs.* TO 'hotel_crs_app'@'127.0.0.1';
+   GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE, EVENT ON hotel_crs.* TO 'hotel_crs_app'@'localhost';
+   FLUSH PRIVILEGES;
+   SQL
    ```
 
-3. Enable MariaDB's event scheduler (add `event_scheduler=ON` to MariaDB's
-   server configuration as well if it should survive a database restart):
+4. Enable the MariaDB event scheduler. It advances the persisted virtual clock.
+   Add `event_scheduler=ON` to the MariaDB server configuration if you want it
+   automatically enabled after every MariaDB restart.
 
    ```bash
-   mariadb -u root -p -e "SET GLOBAL event_scheduler = ON;"
+   sudo mariadb -e "SET GLOBAL event_scheduler = ON;"
    ```
 
-4. Set up MongoDB's `hotel_features` collection and unique index using the
-   commands in [MONGO_SETUP.md](MONGO_SETUP.md).
+5. Initialize MongoDB amenities. Run this whole block with `mongosh`, not with
+   `mariadb`. The `updateOne(..., { upsert: true })` commands are safe to rerun.
 
-5. Copy the environment template and fill in working database credentials and a
-   long random Auth.js secret:
+   ```bash
+   mongosh <<'MONGOSH'
+   use hotel_crs
+   db.hotel_features.createIndex({ hotel_id: 1 }, { unique: true })
+   db.hotel_features.updateOne(
+     { hotel_id: 1 },
+     { $set: { amenities: { general: ["free wifi", "parking"], wellness: ["pool", "gym"], policies: { pet_friendly: true } }, room_type_features: {} } },
+     { upsert: true }
+   )
+   db.hotel_features.updateOne(
+     { hotel_id: 2 },
+     { $set: { amenities: { general: ["free wifi", "parking"], wellness: ["gym"], policies: { pet_friendly: false } }, room_type_features: {} } },
+     { upsert: true }
+   )
+   MONGOSH
+   ```
+
+6. Create `.env.local` and set the values. `DB_PASSWORD` must exactly match the
+   password used in step 3. Generate a secret with `openssl rand -base64 32`.
 
    ```bash
    cp .env.example .env.local
    ```
 
-6. Start the development server:
+   ```dotenv
+   DB_HOST=127.0.0.1
+   DB_PORT=3306
+   DB_USER=hotel_crs_app
+   DB_PASSWORD=choose-a-strong-password
+   DB_NAME=hotel_crs
+   MONGODB_URI=mongodb://127.0.0.1:27017
+   MONGODB_DB=hotel_crs
+   AUTH_SECRET=replace-with-output-of-openssl-rand-base64-32
+   NEXTAUTH_URL=http://localhost:3000
+   ```
+
+7. Validate and start the application:
 
    ```bash
+   npx tsc --noEmit
    npm run dev
    ```
 
@@ -148,5 +183,4 @@ amenities, reports, the virtual clock, and a synthetic-traffic simulator.
    with the persistent Node development/production server rather than a
    serverless deployment.
 
-For a production run, validate with `npx tsc --noEmit`, build with `npm run build`,
-and start with `npm start`.
+For a production run, use `npm run build` followed by `npm start`.

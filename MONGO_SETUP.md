@@ -1,12 +1,4 @@
-# MongoDB Phase 1 setup
+# MongoDB setup
 
-Run this against the `hotel_crs` database after the MariaDB seed creates the
-hotels:
-
-```javascript
-db.hotel_features.createIndex({ hotel_id: 1 }, { unique: true })
-db.hotel_features.insertMany([
-  { hotel_id: 1, amenities: { general: ["free wifi", "parking"], wellness: ["pool", "gym"], policies: { pet_friendly: true } }, room_type_features: {} },
-  { hotel_id: 2, amenities: { general: ["free wifi", "parking"], wellness: ["gym"], policies: { pet_friendly: false } }, room_type_features: {} }
-])
-```
+The single, current setup guide is in [README.md](README.md#setup-and-run),
+step 5. Run its block using `mongosh`; do not run MongoDB commands in `mariadb`.
