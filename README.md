@@ -39,7 +39,32 @@ is already built and is **not** being redesigned:
 
 The application layer is complete: it includes the `staff_account` and
 `sim_clock` schema additions, MongoDB amenities, credentials authentication,
-guest/staff/admin portals, reporting, and the simulation engine.
+guest/staff/admin portals, reporting, and the simulation engine. The public
+site, guest portal, staff desk, and admin control plane share one responsive
+navigation shell and a consistent design system.
+
+### Demo accounts
+
+Every seeded guest, staff, and admin account uses the same development password:
+
+```text
+Demo@1234
+```
+
+| Role | Email |
+|---|---|
+| Guest | `arjun.mehta@example.com` |
+| Staff (Koramangala) | `staff.koramangala@example.com` |
+| Admin | `admin@example.com` |
+
+The login page also has one-click buttons that fill these credentials. Change
+the seeded hashes before any real deployment.
+
+The DML demo dates are relative to the day you load `hotel_crs_dml.sql`:
+today's arrivals are populated, the waitlist demo uses a two-night stay
+starting today, and the remaining bookings sit in the following weeks. If you
+are using an older database, reload the DDL + DML to pick up the new sample
+dates and schema additions.
 
 ## Why the schema design looks the way it does
 
@@ -125,7 +150,9 @@ root. The MongoDB block is run with `mongosh`—it is **not** a MariaDB command.
 
 4. Enable the MariaDB event scheduler. It advances the persisted virtual clock.
    Add `event_scheduler=ON` to the MariaDB server configuration if you want it
-   automatically enabled after every MariaDB restart.
+   automatically enabled after every MariaDB restart. The clock itself starts
+   **paused** so booking dates stay stable; an Admin resumes it from
+   `/admin/clock` for a live demo.
 
    ```bash
    sudo mariadb -e "SET GLOBAL event_scheduler = ON;"
@@ -177,10 +204,11 @@ root. The MongoDB block is run with `mongosh`—it is **not** a MariaDB command.
    npm run dev
    ```
 
-   Open [http://localhost:3000](http://localhost:3000). Sign in with an Admin
-   account provisioned in `staff_account` to use `/admin`, `/admin/clock`, and
-   `/admin/simulation`. The simulator is intentionally process-local, so run it
-   with the persistent Node development/production server rather than a
-   serverless deployment.
+   Open [http://localhost:3000](http://localhost:3000). Sign in with one of the
+   demo accounts above. Guests land on `/my-bookings`, Staff on `/staff`, and
+   Admins on `/admin`. Use `/admin/clock` and `/admin/simulation` for the demo
+   controls. The simulator is intentionally process-local, so run it with the
+   persistent Node development/production server rather than a serverless
+   deployment.
 
 For a production run, use `npm run build` followed by `npm start`.

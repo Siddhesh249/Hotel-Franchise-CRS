@@ -126,15 +126,19 @@ BEGIN
 END$$
 DELIMITER ;
 
+-- The clock starts PAUSED so that "today" is stable while a human browses and
+-- books. An Admin resumes it from /admin/clock when they want the live demo
+-- (or the simulation engine) to move time forward.
 CREATE TABLE sim_clock (
     clock_id TINYINT PRIMARY KEY DEFAULT 1,
     virtual_now DATETIME NOT NULL,
     tick_minutes INT NOT NULL DEFAULT 60,
-    is_running BOOLEAN NOT NULL DEFAULT TRUE,
+    is_running BOOLEAN NOT NULL DEFAULT FALSE,
     CONSTRAINT chk_single_clock_row CHECK (clock_id = 1)
 ) ENGINE=InnoDB;
 
-INSERT INTO sim_clock (clock_id, virtual_now) VALUES (1, NOW());
+INSERT INTO sim_clock (clock_id, virtual_now, tick_minutes, is_running)
+VALUES (1, NOW(), 60, FALSE);
 
 DELIMITER $$
 CREATE EVENT evt_clock_tick
@@ -145,6 +149,8 @@ BEGIN
     WHERE clock_id = 1 AND is_running = TRUE;
 END$$
 DELIMITER ;
+
+ALTER EVENT evt_clock_tick DISABLE;
 
 -- ============================================================================
 -- SECTION 2: The overbooking engine's own tables
@@ -188,6 +194,7 @@ CREATE TABLE booking (
     check_in_date   DATE NOT NULL,
     check_out_date  DATE NOT NULL,
     num_guests      TINYINT NOT NULL DEFAULT 1,
+    special_requests VARCHAR(500),
     booking_status  ENUM('Confirmed','Waitlisted','CheckedIn','CheckedOut','Cancelled','NoShow')
                     NOT NULL DEFAULT 'Waitlisted',
     is_overbooked   BOOLEAN NOT NULL DEFAULT FALSE,
@@ -244,6 +251,7 @@ CREATE TABLE cancellation_history (
 
 CREATE INDEX idx_booking_roomtype_dates ON booking (room_type_id, check_in_date, check_out_date);
 CREATE INDEX idx_booking_status         ON booking (booking_status);
+CREATE INDEX idx_booking_guest          ON booking (guest_id);
 CREATE INDEX idx_payment_booking        ON payment (booking_id);
 
 -- ============================================================================
@@ -374,6 +382,7 @@ this_proc: BEGIN
     DECLARE v_date         DATE;
     DECLARE v_min_avail    INT;
     DECLARE v_total_rooms  INT;
+    DECLARE v_max_occupancy TINYINT;
     DECLARE v_overbook_pct DECIMAL(5,2);
     DECLARE v_buffer       INT;
     DECLARE v_price        DECIMAL(10,2);
@@ -392,8 +401,21 @@ this_proc: BEGIN
         LEAVE this_proc;
     END IF;
 
-    SELECT total_rooms, base_price INTO v_total_rooms, v_price
+    SELECT total_rooms, base_price, max_occupancy
+      INTO v_total_rooms, v_price, v_max_occupancy
     FROM room_type WHERE room_type_id = p_room_type_id;
+
+    IF v_total_rooms IS NULL THEN
+        SET p_status = 'INVALID_ROOM_TYPE';
+        SET p_booking_id = NULL;
+        LEAVE this_proc;
+    END IF;
+
+    IF p_num_guests IS NULL OR p_num_guests < 1 OR p_num_guests > v_max_occupancy THEN
+        SET p_status = 'INVALID_GUESTS';
+        SET p_booking_id = NULL;
+        LEAVE this_proc;
+    END IF;
 
     SET v_overbook_pct = COALESCE(
         (SELECT overbook_percentage FROM overbooking_policy WHERE room_type_id = p_room_type_id), 0);
@@ -451,6 +473,7 @@ this_proc: BEGIN
     DECLARE v_check_out    DATE;
     DECLARE v_status       VARCHAR(20);
     DECLARE v_promote_id   INT DEFAULT NULL;
+    DECLARE v_refund       DECIMAL(10,2) DEFAULT 0;
 
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
@@ -475,10 +498,20 @@ this_proc: BEGIN
           AND stay_date >= v_check_in AND stay_date < v_check_out;
     END IF;
 
+    -- A cancelled stay that was already paid is refunded in this simulated
+    -- system. The audit row records the amount, and the payment is marked
+    -- Refunded so the guest UI is not left showing "Paid" on a dead booking.
+    SELECT COALESCE(SUM(amount), 0) INTO v_refund
+    FROM payment
+    WHERE booking_id = p_booking_id AND payment_status = 'Completed';
+
     UPDATE booking SET booking_status = 'Cancelled' WHERE booking_id = p_booking_id;
 
-    INSERT INTO cancellation_history (booking_id, cancellation_reason)
-    VALUES (p_booking_id, p_reason);
+    INSERT INTO cancellation_history (booking_id, cancellation_reason, refund_amount)
+    VALUES (p_booking_id, p_reason, v_refund);
+
+    UPDATE payment SET payment_status = 'Refunded'
+    WHERE booking_id = p_booking_id AND payment_status = 'Completed';
 
     COMMIT;
 
@@ -515,10 +548,17 @@ FOR EACH ROW
 BEGIN
     DECLARE v_check_in  DATE;
     DECLARE v_check_out DATE;
-    DECLARE v_conflict   INT DEFAULT 0;
+    DECLARE v_status    VARCHAR(20);
+    DECLARE v_conflict  INT DEFAULT 0;
 
-    SELECT check_in_date, check_out_date INTO v_check_in, v_check_out
+    SELECT check_in_date, check_out_date, booking_status
+      INTO v_check_in, v_check_out, v_status
     FROM booking WHERE booking_id = NEW.booking_id;
+
+    IF v_status IS NULL OR v_status NOT IN ('Confirmed','CheckedIn') THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Only confirmed or checked-in bookings can be assigned a physical room.';
+    END IF;
 
     SELECT COUNT(*) INTO v_conflict
     FROM room_assignment ra

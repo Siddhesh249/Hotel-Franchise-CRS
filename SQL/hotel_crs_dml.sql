@@ -5,8 +5,14 @@
 
 USE hotel_crs;
 
--- Replace these development hashes before production deployment.
-UPDATE guest SET password_hash = '$2b$12$wJY9Yx6Qm7v1QfGZ8f5dOeYx1m5w1n0J4R4w2i8j8p4u7n3g6c2' WHERE password_hash = '';
+-- Demo dates are relative to the day this file is loaded, so the sample stays
+-- useful whenever the project is set up (arrivals are today, not a fixed past date).
+SET @demo_checkin  = CURRENT_DATE;
+SET @demo_checkout = DATE_ADD(CURRENT_DATE, INTERVAL 2 DAY);
+
+-- Demo password for every seeded account: Demo@1234
+-- (hash generated with bcrypt, cost 12). Change before any real deployment.
+SET @demo_password_hash = '$2b$12$1ugpwnX.DaFfZmJD8TfzhuO8rYHNvpXMw8ukiqGTkNm1G.dcLM6qa';
 
 -- ----------------------------------------------------------------------------
 -- Franchise + two properties under it
@@ -19,8 +25,8 @@ INSERT INTO hotel (franchise_id, hotel_name, city, state, address, star_rating, 
 (1, 'Nightingale Suites - Andheri',     'Mumbai',    'Maharashtra', 'Andheri East, MIDC',    4, '02241234567');
 
 INSERT INTO staff_account (hotel_id, full_name, email, password_hash, role) VALUES
-(1, 'Koramangala Front Desk', 'staff.koramangala@example.com', '$2b$12$wJY9Yx6Qm7v1QfGZ8f5dOeYx1m5w1n0J4R4w2i8j8p4u7n3g6c2', 'Staff'),
-(NULL, 'Franchise Administrator', 'admin@example.com', '$2b$12$wJY9Yx6Qm7v1QfGZ8f5dOeYx1m5w1n0J4R4w2i8j8p4u7n3g6c2', 'Admin');
+(1, 'Koramangala Front Desk', 'staff.koramangala@example.com', @demo_password_hash, 'Staff'),
+(NULL, 'Franchise Administrator', 'admin@example.com', @demo_password_hash, 'Admin');
 
 -- ----------------------------------------------------------------------------
 -- Room types (room_type_id 1-3 = Koramangala, 4-6 = Andheri)
@@ -47,19 +53,19 @@ INSERT INTO room (hotel_id, room_type_id, room_number, floor_number) VALUES
 -- ----------------------------------------------------------------------------
 -- Guests
 -- ----------------------------------------------------------------------------
-INSERT INTO guest (first_name, last_name, email, phone, address) VALUES
-('Arjun','Mehta','arjun.mehta@example.com','9876500001','Bengaluru'),
-('Priya','Nair','priya.nair@example.com','9876500002','Chennai'),
-('Rohan','Kulkarni','rohan.kulkarni@example.com','9876500003','Pune'),
-('Sneha','Iyer','sneha.iyer@example.com','9876500004','Hyderabad'),
-('Karan','Singh','karan.singh@example.com','9876500005','Delhi'),
-('Ananya','Rao','ananya.rao@example.com','9876500006','Bengaluru'),
-('Vikram','Joshi','vikram.joshi@example.com','9876500007','Mumbai'),
-('Divya','Menon','divya.menon@example.com','9876500008','Kochi'),
-('Aditya','Verma','aditya.verma@example.com','9876500009','Jaipur'),
-('Neha','Kapoor','neha.kapoor@example.com','9876500010','Chandigarh'),
-('Rahul','Deshmukh','rahul.deshmukh@example.com','9876500011','Nagpur'),
-('Ishita','Bose','ishita.bose@example.com','9876500012','Kolkata');
+INSERT INTO guest (first_name, last_name, email, phone, address, password_hash) VALUES
+('Arjun','Mehta','arjun.mehta@example.com','9876500001','Bengaluru', @demo_password_hash),
+('Priya','Nair','priya.nair@example.com','9876500002','Chennai', @demo_password_hash),
+('Rohan','Kulkarni','rohan.kulkarni@example.com','9876500003','Pune', @demo_password_hash),
+('Sneha','Iyer','sneha.iyer@example.com','9876500004','Hyderabad', @demo_password_hash),
+('Karan','Singh','karan.singh@example.com','9876500005','Delhi', @demo_password_hash),
+('Ananya','Rao','ananya.rao@example.com','9876500006','Bengaluru', @demo_password_hash),
+('Vikram','Joshi','vikram.joshi@example.com','9876500007','Mumbai', @demo_password_hash),
+('Divya','Menon','divya.menon@example.com','9876500008','Kochi', @demo_password_hash),
+('Aditya','Verma','aditya.verma@example.com','9876500009','Jaipur', @demo_password_hash),
+('Neha','Kapoor','neha.kapoor@example.com','9876500010','Chandigarh', @demo_password_hash),
+('Rahul','Deshmukh','rahul.deshmukh@example.com','9876500011','Nagpur', @demo_password_hash),
+('Ishita','Bose','ishita.bose@example.com','9876500012','Kolkata', @demo_password_hash);
 
 -- ----------------------------------------------------------------------------
 -- Overbooking policy per room type
@@ -81,17 +87,17 @@ INSERT INTO overbooking_policy (room_type_id, overbook_percentage) VALUES
 -- so 6 rooms are sellable in total before anyone hits the waitlist.
 -- ============================================================================
 
-CALL sp_create_booking(1,  1, '2026-10-10', '2026-10-12', 1, @bid1, @st1);
-CALL sp_create_booking(2,  1, '2026-10-10', '2026-10-12', 2, @bid2, @st2);
-CALL sp_create_booking(3,  1, '2026-10-10', '2026-10-12', 1, @bid3, @st3);
-CALL sp_create_booking(4,  1, '2026-10-10', '2026-10-12', 2, @bid4, @st4);
-CALL sp_create_booking(5,  1, '2026-10-10', '2026-10-12', 1, @bid5, @st5);
+CALL sp_create_booking(1,  1, @demo_checkin, @demo_checkout, 1, @bid1, @st1);
+CALL sp_create_booking(2,  1, @demo_checkin, @demo_checkout, 2, @bid2, @st2);
+CALL sp_create_booking(3,  1, @demo_checkin, @demo_checkout, 1, @bid3, @st3);
+CALL sp_create_booking(4,  1, @demo_checkin, @demo_checkout, 2, @bid4, @st4);
+CALL sp_create_booking(5,  1, @demo_checkin, @demo_checkout, 1, @bid5, @st5);
 -- physical capacity (5 rooms) is now fully booked
 
-CALL sp_create_booking(6,  1, '2026-10-10', '2026-10-12', 2, @bid6, @st6);
+CALL sp_create_booking(6,  1, @demo_checkin, @demo_checkout, 2, @bid6, @st6);
 -- 6th booking dips into the overbooking buffer -> CONFIRMED_OVERBOOKED
 
-CALL sp_create_booking(7,  1, '2026-10-10', '2026-10-12', 1, @bid7, @st7);
+CALL sp_create_booking(7,  1, @demo_checkin, @demo_checkout, 1, @bid7, @st7);
 -- 7th booking has nowhere left to go -> WAITLISTED
 
 SELECT @bid1 booking_id, @st1 status
@@ -104,7 +110,7 @@ UNION ALL SELECT @bid7, @st7;
 
 -- sanity checks
 SELECT * FROM vw_roomtype_overview WHERE room_type_id = 1;
-SELECT fn_available_rooms(1, '2026-10-10') AS rooms_left_on_2026_10_10;
+SELECT fn_available_rooms(1, @demo_checkin) AS rooms_left_on_checkin;
 
 -- ============================================================================
 -- DEMO: guest #2 cancels their booking -> a physical room frees up ->
@@ -134,10 +140,10 @@ INSERT INTO room_assignment (booking_id, room_id) VALUES (@bid3, 2);  -- room 10
 -- A couple of extra bookings elsewhere in the franchise, just so the data
 -- doesn't look like a single-scenario toy set
 -- ----------------------------------------------------------------------------
-CALL sp_create_booking(8,  2, '2026-11-01', '2026-11-03', 2, @bid8,  @st8);   -- Koramangala Deluxe
-CALL sp_create_booking(9,  3, '2026-12-24', '2026-12-27', 2, @bid9,  @st9);   -- Koramangala Suite
-CALL sp_create_booking(10, 4, '2026-10-15', '2026-10-17', 1, @bid10, @st10);  -- Andheri Standard
-CALL sp_create_booking(11, 6, '2027-01-01', '2027-01-03', 3, @bid11, @st11);  -- Andheri Suite
+CALL sp_create_booking(8,  2, DATE_ADD(CURRENT_DATE, INTERVAL 7 DAY), DATE_ADD(CURRENT_DATE, INTERVAL 9 DAY), 2, @bid8,  @st8);   -- Koramangala Deluxe
+CALL sp_create_booking(9,  3, DATE_ADD(CURRENT_DATE, INTERVAL 30 DAY), DATE_ADD(CURRENT_DATE, INTERVAL 33 DAY), 2, @bid9,  @st9);   -- Koramangala Suite
+CALL sp_create_booking(10, 4, DATE_ADD(CURRENT_DATE, INTERVAL 4 DAY), DATE_ADD(CURRENT_DATE, INTERVAL 6 DAY), 1, @bid10, @st10);  -- Andheri Standard
+CALL sp_create_booking(11, 6, DATE_ADD(CURRENT_DATE, INTERVAL 60 DAY), DATE_ADD(CURRENT_DATE, INTERVAL 62 DAY), 3, @bid11, @st11);  -- Andheri Suite
 
 INSERT INTO payment (booking_id, amount, payment_method, payment_status) VALUES
 (@bid8,  11000.00, 'Card',       'Completed'),

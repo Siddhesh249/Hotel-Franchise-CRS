@@ -154,17 +154,23 @@ CREATE TABLE sim_clock (
     clock_id      TINYINT PRIMARY KEY DEFAULT 1,
     virtual_now   DATETIME NOT NULL,
     tick_minutes  INT NOT NULL DEFAULT 60,   -- virtual minutes advanced per real tick
-    is_running    BOOLEAN NOT NULL DEFAULT TRUE,
+    is_running    BOOLEAN NOT NULL DEFAULT FALSE,
     CONSTRAINT chk_single_clock_row CHECK (clock_id = 1)
 ) ENGINE=InnoDB;
 
-INSERT INTO sim_clock (clock_id, virtual_now) VALUES (1, NOW());
+INSERT INTO sim_clock (clock_id, virtual_now, tick_minutes, is_running)
+VALUES (1, NOW(), 60, FALSE);
 ```
 
 `trg_staff_account_scope_insert` and `trg_staff_account_scope_update` enforce
 the Admin/Staff `hotel_id` rule. This is deliberately a trigger rather than a
 `CHECK`: MariaDB 11.8 rejects this `CHECK` over a foreign-key column when it
 uses `ON UPDATE CASCADE`.
+
+Implementation additions on top of the original core: `booking.special_requests
+VARCHAR(500)` (the booking form's optional request), and
+`sp_cancel_booking` marks any completed payment as `Refunded` and records the
+amount in `cancellation_history.refund_amount`.
 
 **Virtual-clock event (see §5 for full discussion):**
 
@@ -240,12 +246,15 @@ simulation, reports) already depends on.
 - **Pause** — `ALTER EVENT evt_clock_tick DISABLE;` (and set `is_running = FALSE`
   for the admin UI to read back). Time stops exactly where it was; nothing needs to
   be "saved" because nothing has moved except a row that's already on disk.
+  The clock ships **paused** so that a human browsing and booking sees a stable
+  "today"; an Admin resumes it for a live demo.
 - **Resume** — `ALTER EVENT evt_clock_tick ENABLE;` / `is_running = TRUE`. Picks up
   from the current `virtual_now`.
 - **Restart survival** — `sim_clock` is a table; its last value is whatever was last
   committed. The event resumes firing on server start as long as
   `event_scheduler = ON` is set (both at runtime and in `my.cnf`, so it survives a
   full MariaDB restart, not just an application restart).
+- **Reset** — `UPDATE sim_clock SET virtual_now = NOW() WHERE clock_id = 1;`
 - **Fast-forward** — `UPDATE sim_clock SET virtual_now = virtual_now + INTERVAL n DAY WHERE clock_id = 1;`
 - **Rate control** — Admin updates `tick_minutes` to speed up or slow down how fast
   virtual time moves relative to real time.
@@ -351,11 +360,13 @@ archetype on demand, and clear all synthetic data (deletes/resets rows where
 
 ## 8. Payment simulation
 
-No real payment gateway. A booking's payment step is a form that inserts a
-`payment` row directly (`payment_method` chosen by the user, `payment_status`
-set to `'Completed'` or left `'Pending'`) — exactly the shape already present in
-`hotel_crs_dml.sql`. This is normal and expected for a course project; documented
-here so it reads as an explicit decision rather than an unfinished feature.
+No real payment gateway. A booking's payment step inserts a `payment` row
+directly (`payment_method` chosen by the user, `payment_status` set to
+`'Completed'`). The **amount is always read from `booking.total_amount` on the
+server** — a client cannot choose how much to pay. Exactly the shape already
+present in `hotel_crs_dml.sql`. This is normal and expected for a course
+project; documented here so it reads as an explicit decision rather than an
+unfinished feature.
 
 ## 9. API route map
 
@@ -371,8 +382,10 @@ here so it reads as an explicit decision rather than an unfinished feature.
 | POST | `/api/bookings/:id/cancel` | Guest (own) | Calls `sp_cancel_booking`. |
 | POST | `/api/payments` | Guest (own booking) | Inserts a simulated `payment` row. |
 | GET | `/api/staff/bookings` | Staff | Bookings/arrivals for `session.hotelId` only. |
+| GET | `/api/staff/rooms?booking_id=` | Staff | Physical rooms of the booking's type, marked occupied/free for its dates. |
 | POST | `/api/staff/assign-room` | Staff | Inserts `room_assignment`; translates a `45000` trigger signal into a clean "room already occupied" API error. |
 | GET/POST/PUT | `/api/admin/hotels`, `/api/admin/room-types` | Admin | CRUD on the hierarchy. |
+| POST | `/api/admin/room-types/:id/rooms` | Admin | Creates missing physical `room` rows for a room type. |
 | PUT | `/api/admin/overbooking-policy/:roomTypeId` | Admin | Edits `overbook_percentage`. |
 | PUT | `/api/admin/hotels/:id/features` | Admin | Edits the `hotel_features` Mongo document. |
 | GET | `/api/admin/reports/overbooked` | Admin | The overbooked-bookings query from `hotel_crs_dml.sql`. |
