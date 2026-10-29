@@ -3,8 +3,6 @@
  *
  * These mirror the MariaDB schema (ARCHITECTURE.md §4.1) and the MongoDB
  * hotel_features document shape (ARCHITECTURE.md §4.2).
- *
- * Import from '@/types' in API routes and components.
  */
 
 // ---------------------------------------------------------------------------
@@ -57,12 +55,14 @@ export interface Room {
   hotel_id: number;
   room_type_id: number;
   room_number: string;
-  floor: number | null;
+  floor_number: number | null;
+  room_status: 'Available' | 'Maintenance' | 'OutOfService';
 }
 
 export interface Guest {
   guest_id: number;
-  full_name: string;
+  first_name: string;
+  last_name: string;
   email: string;
   phone: string | null;
   address: string | null;
@@ -86,18 +86,55 @@ export type BookingStatus =
   | 'CONFIRMED_OVERBOOKED'
   | 'WAITLISTED'
   | 'INVALID_DATES'
+  | 'INVALID_ROOM_TYPE'
+  | 'INVALID_GUESTS'
   | 'ERROR';
+
+/** booking.booking_status ENUM values */
+export type BookingRowStatus =
+  | 'Confirmed'
+  | 'Waitlisted'
+  | 'CheckedIn'
+  | 'CheckedOut'
+  | 'Cancelled'
+  | 'NoShow';
 
 export interface Booking {
   booking_id: number;
   guest_id: number;
   room_type_id: number;
-  check_in_date: string;  // DATE
+  check_in_date: string; // DATE
   check_out_date: string; // DATE
   num_guests: number;
-  booking_date: string;   // DATETIME
-  status: BookingStatus;
   special_requests: string | null;
+  booking_date: string; // DATETIME
+  booking_status: BookingRowStatus;
+  is_overbooked: boolean;
+  total_amount: string | number | null;
+}
+
+export interface BookingWithDetails extends Booking {
+  type_name: string;
+  base_price: string | number;
+  max_occupancy: number;
+  hotel_id: number;
+  hotel_name: string;
+  city: string;
+  state: string | null;
+  payment_id: number | null;
+  payment_status: 'Pending' | 'Completed' | 'Refunded' | 'Failed' | null;
+  payment_method: string | null;
+  paid_amount: string | number | null;
+  room_number: string | null;
+  nights: number;
+}
+
+export interface StaffBooking extends BookingWithDetails {
+  first_name: string;
+  last_name: string;
+  email: string;
+  phone: string | null;
+  is_synthetic: boolean;
 }
 
 export interface RoomAssignment {
@@ -112,7 +149,7 @@ export interface Payment {
   booking_id: number;
   amount: number;
   payment_method: string;
-  payment_status: 'Pending' | 'Completed' | 'Refunded';
+  payment_status: 'Pending' | 'Completed' | 'Refunded' | 'Failed';
   payment_date: string; // DATETIME
 }
 
@@ -154,5 +191,22 @@ export interface ApiError {
 
 /** Hotel listing item — SQL hotel row merged with Mongo amenities summary */
 export interface HotelListItem extends Hotel {
-  features?: Partial<HotelFeatures>;
+  room_types: RoomTypeWithAvailability[];
+  features: HotelFeatures | null;
+}
+
+export interface RoomTypeWithAvailability extends RoomType {
+  rooms_left: number;
+  available: boolean;
+}
+
+export interface HotelDetail extends Hotel {
+  features: HotelFeatures | null;
+  room_types: RoomTypeWithAvailability[];
+}
+
+export interface AvailabilityResult {
+  check_in: string;
+  check_out: string;
+  results: Array<RoomTypeWithAvailability & { hotel_name: string; city: string; state: string | null }>;
 }
