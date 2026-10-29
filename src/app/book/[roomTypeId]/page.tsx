@@ -17,11 +17,7 @@
  */
 
 "use client";
-import { FormEvent, useState } from 'react';
-
-// Allow this route to block on params (Next.js 16 + cacheComponents).
-// Scaffolding only — Phase 1 implementation will make this a proper dynamic route.
-export const instant = false;
+import { FormEvent, use, useState } from 'react';
 
 function BookPageContent({ roomTypeId }: { roomTypeId: string }) {
   const [outcome, setOutcome] = useState('');
@@ -35,11 +31,11 @@ function BookPageContent({ roomTypeId }: { roomTypeId: string }) {
   );
 }
 
-export default async function BookPage({
+export default function BookPage({
   params,
 }: {
   params: Promise<{ roomTypeId: string }>;
 }) {
-  const { roomTypeId } = await params;
+  const { roomTypeId } = use(params);
   return <BookPageContent roomTypeId={roomTypeId} />;
 }
