@@ -55,8 +55,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     async session({ session, token }) {
       if (session.user) {
         const user = session.user as typeof session.user & { actorType?: string; role?: string; hotelId?: number | null };
-        user.actorType = token.actorType as string;
-        user.role = token.role as string;
+        user.actorType = token.actorType as 'guest' | 'staff';
+        user.role = token.role as 'Guest' | 'Staff' | 'Admin';
         user.hotelId = token.hotelId as number | null;
         user.id = token.sub as string;
       }

@@ -37,10 +37,9 @@ is already built and is **not** being redesigned:
   overbooking/waitlist/promotion flow.
 - `hotel_crs_schema.dbml` — paste into dbdiagram.io for the ER diagram.
 
-Everything described in `ARCHITECTURE.md` beyond this — the `staff_account` and
-`sim_clock` tables, the `hotel_features` MongoDB collection, auth, the Next.js
-app, and the simulation engine — planned but not yet built. `IMPLEMENTATION_PHASES.md` 
-is the build order for it.
+The application layer is complete: it includes the `staff_account` and
+`sim_clock` schema additions, MongoDB amenities, credentials authentication,
+guest/staff/admin portals, reporting, and the simulation engine.
 
 ## Why the schema design looks the way it does
 
@@ -81,27 +80,107 @@ is the build order for it.
 - **Version control:** Git + GitHub, commit history expected to show both team
   members' individual contributions.
 
-## Running the existing SQL core on Fedora 44 + MariaDB
+## Setup and run
 
-```bash
-sudo systemctl start mariadb        # if it isn't already running
-mariadb -u root -p < hotel_crs_ddl.sql
-mariadb -u root -p < hotel_crs_dml.sql
-mariadb -u root -p hotel_crs -e "SELECT * FROM vw_roomtype_overview;"
-```
+The application includes the guest booking flow, hotel-scoped staff operations,
+and the Phase 2 admin control plane: catalog and buffer management, MongoDB
+amenities, reports, the virtual clock, and a synthetic-traffic simulator.
 
-(`mariadb` and `mysql` are the same client on Fedora's MariaDB packages —
-either works.)
-# Phase 1 quick start
+These commands assume MariaDB, MongoDB, Node.js, and npm are already installed.
+Run the MariaDB and MongoDB blocks in a normal terminal from the repository
+root. The MongoDB block is run with `mongosh`—it is **not** a MariaDB command.
 
-Phase 1 is implemented on the `phase-1-foundation-guest-core` branch. It covers
-guest registration/login, hotel discovery, availability, confirmed/overbooked/
-waitlisted bookings, cancellation and waitlist promotion, simulated payments,
-and hotel-scoped staff room assignment.
+1. Start both database services and install Node dependencies:
 
-1. Create `SQL/hotel_crs_ddl.sql` and then run `SQL/hotel_crs_dml.sql` in MariaDB.
-2. Configure MongoDB using `MONGO_SETUP.md`.
-3. Copy `.env.example` to `.env.local` and set real credentials and `AUTH_SECRET`.
-4. Install dependencies and run `npm run dev`.
+   ```bash
+   sudo systemctl enable --now mariadb
+   sudo systemctl enable --now mongod
+   npm install
+   ```
 
-The branch is intentionally separate from `main`; it is not merged.
+2. Reset and create the local development database, then load the schema and
+   sample data. The reset is safe only when `hotel_crs` is a disposable local
+   development database—it deletes all of its data.
+
+   ```bash
+   sudo mariadb -e "DROP DATABASE IF EXISTS hotel_crs;"
+   sudo mariadb < SQL/hotel_crs_ddl.sql
+   sudo mariadb < SQL/hotel_crs_dml.sql
+   ```
+
+3. Create the application database user. Replace `choose-a-strong-password`
+   with a password you will also put in `.env.local`. Both hosts are created so
+   the application works whether its MariaDB connection resolves to `127.0.0.1`
+   or `localhost`.
+
+   ```bash
+   sudo mariadb <<'SQL'
+   CREATE USER IF NOT EXISTS 'hotel_crs_app'@'127.0.0.1' IDENTIFIED BY 'choose-a-strong-password';
+   CREATE USER IF NOT EXISTS 'hotel_crs_app'@'localhost' IDENTIFIED BY 'choose-a-strong-password';
+   GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE, EVENT ON hotel_crs.* TO 'hotel_crs_app'@'127.0.0.1';
+   GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE, EVENT ON hotel_crs.* TO 'hotel_crs_app'@'localhost';
+   FLUSH PRIVILEGES;
+   SQL
+   ```
+
+4. Enable the MariaDB event scheduler. It advances the persisted virtual clock.
+   Add `event_scheduler=ON` to the MariaDB server configuration if you want it
+   automatically enabled after every MariaDB restart.
+
+   ```bash
+   sudo mariadb -e "SET GLOBAL event_scheduler = ON;"
+   ```
+
+5. Initialize MongoDB amenities. Run this whole block with `mongosh`, not with
+   `mariadb`. The `updateOne(..., { upsert: true })` commands are safe to rerun.
+
+   ```bash
+   mongosh <<'MONGOSH'
+   use hotel_crs
+   db.hotel_features.createIndex({ hotel_id: 1 }, { unique: true })
+   db.hotel_features.updateOne(
+     { hotel_id: 1 },
+     { $set: { amenities: { general: ["free wifi", "parking"], wellness: ["pool", "gym"], policies: { pet_friendly: true } }, room_type_features: {} } },
+     { upsert: true }
+   )
+   db.hotel_features.updateOne(
+     { hotel_id: 2 },
+     { $set: { amenities: { general: ["free wifi", "parking"], wellness: ["gym"], policies: { pet_friendly: false } }, room_type_features: {} } },
+     { upsert: true }
+   )
+   MONGOSH
+   ```
+
+6. Create `.env.local` and set the values. `DB_PASSWORD` must exactly match the
+   password used in step 3. Generate a secret with `openssl rand -base64 32`.
+
+   ```bash
+   cp .env.example .env.local
+   ```
+
+   ```dotenv
+   DB_HOST=127.0.0.1
+   DB_PORT=3306
+   DB_USER=hotel_crs_app
+   DB_PASSWORD=choose-a-strong-password
+   DB_NAME=hotel_crs
+   MONGODB_URI=mongodb://127.0.0.1:27017
+   MONGODB_DB=hotel_crs
+   AUTH_SECRET=replace-with-output-of-openssl-rand-base64-32
+   NEXTAUTH_URL=http://localhost:3000
+   ```
+
+7. Validate and start the application:
+
+   ```bash
+   npx tsc --noEmit
+   npm run dev
+   ```
+
+   Open [http://localhost:3000](http://localhost:3000). Sign in with an Admin
+   account provisioned in `staff_account` to use `/admin`, `/admin/clock`, and
+   `/admin/simulation`. The simulator is intentionally process-local, so run it
+   with the persistent Node development/production server rather than a
+   serverless deployment.
+
+For a production run, use `npm run build` followed by `npm start`.

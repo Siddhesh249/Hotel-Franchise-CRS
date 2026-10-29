@@ -1,21 +1,6 @@
-/**
- * /admin/clock — Virtual clock controls page (Admin only)
- *
- * Reads/writes GET|PUT /api/admin/clock.
- * Phase 2 — §2.3 Virtual clock admin UI
- *
- * TODO: Phase 2 (2.3) — implement clock control UI
- *   - Display current virtual_now, tick_minutes, is_running
- *   - Pause / Resume button
- *   - Fast-forward by N days input
- *   - Set tick rate input
- */
-export default function AdminClockPage() {
-  return (
-    <main className="max-w-2xl mx-auto p-8">
-      <h1 className="text-3xl font-bold mb-6">Virtual Clock</h1>
-      {/* TODO: Phase 2 (2.3) — clock controls */}
-      <p className="text-gray-500">Clock controls coming in Phase 2.</p>
-    </main>
-  );
-}
+'use client';
+import Link from 'next/link';
+import { useEffect, useState } from 'react';
+type Clock = { virtual_now: string; tick_minutes: number; is_running: boolean };
+export default function AdminClockPage() { const [clock, setClock] = useState<Clock | null>(null); const [message, setMessage] = useState(''); const load = async () => { const response = await fetch('/api/admin/clock'); const data = await response.json(); if (response.ok) setClock(data); else setMessage(data.error?.message ?? 'Unable to load clock'); }; useEffect(() => { const timer = window.setTimeout(() => { void load(); }, 0); return () => window.clearTimeout(timer); }, []); const act = async (action: string, extra: Record<string, number> = {}) => { const response = await fetch('/api/admin/clock', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, ...extra }) }); const data = await response.json(); if (response.ok) { setClock(data); setMessage('Clock updated.'); } else setMessage(data.error?.message ?? 'Update failed'); }; return <main className="mx-auto max-w-3xl p-6 md:p-10"><Link className="text-sm font-semibold text-indigo-700" href="/admin">← Admin dashboard</Link><h1 className="mt-4 text-4xl font-bold">Virtual clock</h1><p className="mt-2 text-slate-600">Persisted simulated time for availability defaults and traffic generation.</p>{message && <p className="mt-5 rounded-lg bg-indigo-50 p-3 text-indigo-900">{message}</p>}{clock && <section className="mt-6 rounded-2xl bg-slate-900 p-7 text-white"><p className="text-sm uppercase tracking-widest text-slate-300">Virtual now</p><p className="mt-2 text-3xl font-bold">{new Date(clock.virtual_now).toLocaleString()}</p><p className="mt-4">{clock.is_running ? 'Running' : 'Paused'} · {clock.tick_minutes} virtual minutes per real second</p><button className="mt-5 rounded-lg bg-white px-4 py-2 font-semibold text-slate-900" onClick={() => void act(clock.is_running ? 'pause' : 'resume')}>{clock.is_running ? 'Pause clock' : 'Resume clock'}</button></section>}<div className="mt-6 grid gap-5 sm:grid-cols-2"><Control label="Fast-forward days" id="days" initial="1" button="Move time" onSubmit={(value) => void act('fast-forward', { days: value })}/><Control label="Tick rate (minutes/second)" id="rate" initial={String(clock?.tick_minutes ?? 60)} button="Set rate" onSubmit={(value) => void act('set-rate', { tick_minutes: value })}/></div></main>; }
+function Control({ label, id, initial, button, onSubmit }: { label: string; id: string; initial: string; button: string; onSubmit: (value: number) => void }) { return <label className="rounded-xl border p-5 font-semibold">{label}<input id={id} className="mt-3 w-full rounded border p-2 font-normal" type="number" defaultValue={initial}/><button className="mt-3 rounded bg-indigo-600 px-3 py-2 text-sm text-white" onClick={() => onSubmit(Number((document.getElementById(id) as HTMLInputElement).value))}>{button}</button></label>; }

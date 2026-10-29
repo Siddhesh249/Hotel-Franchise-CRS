@@ -96,10 +96,35 @@ CREATE TABLE staff_account (
     role ENUM('Admin','Staff') NOT NULL,
     created_on DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_staff_hotel FOREIGN KEY (hotel_id) REFERENCES hotel(hotel_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT uq_staff_email UNIQUE (email),
-    CONSTRAINT chk_staff_role_hotel CHECK ((role = 'Admin' AND hotel_id IS NULL) OR (role = 'Staff' AND hotel_id IS NOT NULL)
-    )
+    CONSTRAINT uq_staff_email UNIQUE (email)
 ) ENGINE=InnoDB;
+
+-- MariaDB 11.8 rejects a CHECK which references a column participating in an
+-- ON UPDATE CASCADE foreign key. These triggers preserve the intended rule:
+-- Admin is franchise-wide (no hotel), while Staff is scoped to one hotel.
+DELIMITER $$
+CREATE TRIGGER trg_staff_account_scope_insert
+BEFORE INSERT ON staff_account
+FOR EACH ROW
+BEGIN
+    IF (NEW.role = 'Admin' AND NEW.hotel_id IS NOT NULL)
+       OR (NEW.role = 'Staff' AND NEW.hotel_id IS NULL) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Admin accounts must not have a hotel; Staff accounts must have one.';
+    END IF;
+END$$
+
+CREATE TRIGGER trg_staff_account_scope_update
+BEFORE UPDATE ON staff_account
+FOR EACH ROW
+BEGIN
+    IF (NEW.role = 'Admin' AND NEW.hotel_id IS NOT NULL)
+       OR (NEW.role = 'Staff' AND NEW.hotel_id IS NULL) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Admin accounts must not have a hotel; Staff accounts must have one.';
+    END IF;
+END$$
+DELIMITER ;
 
 CREATE TABLE sim_clock (
     clock_id TINYINT PRIMARY KEY DEFAULT 1,
