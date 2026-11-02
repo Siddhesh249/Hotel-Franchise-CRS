@@ -16,7 +16,7 @@ export async function GET() {
     const [rows] = await pool.query<any[]>(
       `SELECT b.booking_id, b.check_in_date, b.check_out_date, b.booking_status,
               b.total_amount, b.is_overbooked,
-              g.first_name, g.last_name, g.email, g.is_synthetic,
+              g.first_name, g.last_name, g.email,
               rt.type_name, h.hotel_name, h.city
          FROM booking b
          JOIN guest g ON g.guest_id = b.guest_id

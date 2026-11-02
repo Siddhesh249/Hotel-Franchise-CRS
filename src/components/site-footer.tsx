@@ -34,8 +34,6 @@ export function SiteFooter() {
           <ul className="mt-3 space-y-2 text-sm text-ink-600">
             <li><Link className="hover:text-brand-700" href="/staff">Staff desk</Link></li>
             <li><Link className="hover:text-brand-700" href="/admin">Admin dashboard</Link></li>
-            <li><Link className="hover:text-brand-700" href="/admin/clock">Virtual clock</Link></li>
-            <li><Link className="hover:text-brand-700" href="/admin/simulation">Simulation</Link></li>
           </ul>
         </div>
       </div>

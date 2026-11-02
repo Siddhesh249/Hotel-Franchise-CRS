@@ -190,6 +190,9 @@ export function StaffDashboard({ staffName, isAdmin = false }: { staffName: stri
             {data ? `${data.hotel.city}${data.hotel.state ? `, ${data.hotel.state}` : ''} · Virtual today: ${formatDate(data.today, { weekday: true })}` : 'Loading today’s arrivals…'}
           </p>
           <p className="mt-1 text-xs text-ink-500">Signed in as {staffName}</p>
+          <p className="mt-1 text-xs text-ink-500">
+            Rooms can be assigned only after the guest&apos;s payment is completed.
+          </p>
           {isAdmin && (
             <p className="mt-2 rounded-lg border border-accent-200 bg-accent-50 px-3 py-2 text-xs text-accent-800">
               Admin view: inspect any hotel&apos;s arrivals. Room assignment is performed by that hotel&apos;s staff account.
@@ -281,7 +284,9 @@ export function StaffDashboard({ staffName, isAdmin = false }: { staffName: stri
         ) : visible.length ? (
           visible.map((booking) => {
             const isOpen = assigningId === booking.booking_id;
-            const canAssign = ['Confirmed', 'CheckedIn'].includes(booking.booking_status) && !booking.room_number;
+            const canAssign = ['Confirmed', 'CheckedIn'].includes(booking.booking_status)
+              && !booking.room_number
+              && booking.payment_status === 'Completed';
             return (
               <article key={booking.booking_id} className="card overflow-hidden">
                 <div className="grid gap-4 p-5 md:grid-cols-[1fr_auto] md:items-start">
@@ -289,7 +294,6 @@ export function StaffDashboard({ staffName, isAdmin = false }: { staffName: stri
                     <div className="flex flex-wrap items-center gap-2">
                       <StatusBadge status={booking.booking_status} />
                       {booking.is_overbooked && <span className="badge-amber">Buffer</span>}
-                      {booking.is_synthetic && <span className="badge-slate">Synthetic</span>}
                       {booking.room_number ? <span className="badge-brand">Room {booking.room_number}</span> : <span className="badge-rose">No room yet</span>}
                     </div>
                     <h2 className="mt-2 text-lg font-semibold">
@@ -328,6 +332,11 @@ export function StaffDashboard({ staffName, isAdmin = false }: { staffName: stri
                         <Icon name="bed" size={14} />
                         {isOpen ? 'Close' : 'Assign room'}
                       </button>
+                    )}
+                    {!booking.room_number
+                      && ['Confirmed', 'CheckedIn'].includes(booking.booking_status)
+                      && booking.payment_status !== 'Completed' && (
+                      <span className="badge-amber justify-center">Payment pending</span>
                     )}
                     <Link href={`/hotels/${booking.hotel_id}`} className="btn-secondary btn-sm">Hotel page</Link>
                   </div>
@@ -387,7 +396,7 @@ export function StaffDashboard({ staffName, isAdmin = false }: { staffName: stri
             <h3 className="mt-4 text-lg font-semibold">Nothing here right now</h3>
             <p className="muted mt-1 max-w-md">
               {filter === 'arrivals'
-                ? 'There are no arrivals scheduled for the virtual date today. Check Upcoming or All bookings.'
+                ? 'There are no arrivals scheduled for today. Check Upcoming or All bookings.'
                 : 'No bookings match this view or search.'}
             </p>
           </div>

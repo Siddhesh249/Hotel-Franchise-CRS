@@ -2,6 +2,8 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { Icon } from '@/components/icons';
+import { AdminAmenitiesEditor } from '@/components/admin-amenities';
+import { AdminInventoryChart } from '@/components/admin-inventory-chart';
 import { formatCurrency, humanize } from '@/lib/format';
 
 type Hotel = {
@@ -30,10 +32,9 @@ type RoomType = {
   physical_room_count: number;
 };
 type Row = Record<string, unknown>;
-type Tab = 'catalog' | 'policies' | 'amenities' | 'reports';
+type Tab = 'catalog' | 'policies' | 'amenities' | 'inventory' | 'reports';
 
 const field = 'input';
-const emptyFeatures = '{\n  "amenities": {\n    "general": [],\n    "wellness": [],\n    "policies": {}\n  },\n  "room_type_features": {}\n}';
 
 async function api(url: string, options?: RequestInit): Promise<unknown> {
   const response = await fetch(url, options);
@@ -100,10 +101,6 @@ export function AdminDashboard() {
 
   const [editingHotel, setEditingHotel] = useState<Hotel | null>(null);
   const [editingType, setEditingType] = useState<RoomType | null>(null);
-
-  const [featureHotel, setFeatureHotel] = useState('');
-  const [featureText, setFeatureText] = useState(emptyFeatures);
-  const [featureLoading, setFeatureLoading] = useState(false);
 
   const [overbooked, setOverbooked] = useState<Row[]>([]);
   const [amenityReport, setAmenityReport] = useState<Row[]>([]);
@@ -252,45 +249,6 @@ export function AdminDashboard() {
     }
   }
 
-  async function loadFeatures(hotelId: string) {
-    setFeatureHotel(hotelId);
-    setFeatureLoading(true);
-    setError('');
-    if (!hotelId) {
-      setFeatureText(emptyFeatures);
-      setFeatureLoading(false);
-      return;
-    }
-    try {
-      const data = await api(`/api/admin/hotels/${hotelId}/features`);
-      setFeatureText(JSON.stringify(data, null, 2));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to load features.');
-    } finally {
-      setFeatureLoading(false);
-    }
-  }
-
-  async function saveFeatures() {
-    setError('');
-    setNotice('');
-    if (!featureHotel) {
-      setError('Choose a hotel first.');
-      return;
-    }
-    try {
-      const parsed: unknown = JSON.parse(featureText);
-      await api(`/api/admin/hotels/${featureHotel}/features`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(parsed),
-      });
-      setNotice('Amenities and room-type features saved.');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'The JSON could not be saved.');
-    }
-  }
-
   const stats = useMemo(() => ({
     hotels: hotels.length,
     types: types.length,
@@ -298,10 +256,11 @@ export function AdminDashboard() {
     buffers: types.filter((type) => Number(type.overbook_percentage) > 0).length,
   }), [hotels, types]);
 
-  const tabs: Array<{ id: Tab; label: string; icon: 'building' | 'shield' | 'sparkles' | 'chart' }> = [
+  const tabs: Array<{ id: Tab; label: string; icon: 'building' | 'shield' | 'sparkles' | 'chart' | 'calendar' }> = [
     { id: 'catalog', label: 'Catalog', icon: 'building' },
-    { id: 'policies', label: 'Overbooking buffers', icon: 'shield' },
+    { id: 'policies', label: 'Overbooking', icon: 'shield' },
     { id: 'amenities', label: 'Amenities', icon: 'sparkles' },
+    { id: 'inventory', label: 'Inventory chart', icon: 'calendar' },
     { id: 'reports', label: 'Reports', icon: 'chart' },
   ];
 
@@ -312,7 +271,7 @@ export function AdminDashboard() {
           { label: 'Hotels', value: stats.hotels, icon: 'building' as const },
           { label: 'Room types', value: stats.types, icon: 'bed' as const },
           { label: 'Physical rooms', value: stats.rooms, icon: 'users' as const },
-          { label: 'Types with a buffer', value: stats.buffers, icon: 'shield' as const },
+          { label: 'Types with a buffer policy', value: stats.buffers, icon: 'shield' as const },
         ].map((stat) => (
           <div key={stat.label} className="card flex items-center gap-3 p-4">
             <span className="flex size-10 items-center justify-center rounded-xl bg-brand-50 text-brand-700">
@@ -546,14 +505,14 @@ export function AdminDashboard() {
       {tab === 'policies' && (
         <div className="mt-6 space-y-4">
           <SectionHeading
-            title="Overbooking buffers"
-            detail="A buffer lets a room type sell up to total_rooms + floor(total_rooms × percent / 100). Suite categories usually stay at 0%."
+            title="Overbooking control"
+            detail="The percentage sets the base buffer: floor(total rooms × percent / 100). The database then adapts that buffer per night — an under-booked previous night raises tomorrow's sellable ceiling, an over-booked night lowers it. The Inventory chart shows the resulting daily plan."
           />
           {types.map((type) => {
             const percent = Number(type.overbook_percentage);
             const buffer = Math.floor(Number(type.total_rooms) * percent / 100);
             return (
-              <form key={type.room_type_id} onSubmit={(event) => void savePolicy(type, event)} className="card grid gap-4 p-5 md:grid-cols-[1fr_140px_120px_100px] md:items-center">
+              <form key={type.room_type_id} onSubmit={(event) => void savePolicy(type, event)} className="card grid gap-4 p-5 md:grid-cols-[1fr_130px_130px_120px_100px] md:items-center">
                 <div>
                   <p className="font-semibold text-ink-900">{type.hotel_name}</p>
                   <p className="muted">{type.type_name} · {type.total_rooms} physical rooms</p>
@@ -563,7 +522,19 @@ export function AdminDashboard() {
                   <input name="percent" type="number" min="0" max="50" step="0.01" defaultValue={percent} className={field} />
                 </label>
                 <div className="rounded-xl bg-sand-50 px-3 py-2 text-sm">
-                  <p className="text-xs font-semibold text-ink-500 uppercase">Max sellable</p>
+                  <p className="text-xs font-semibold text-ink-500 uppercase">Effective buffer</p>
+                  <p className="font-semibold text-ink-900">
+                    {buffer} {buffer === 1 ? 'room' : 'rooms'}
+                  </p>
+                  <p className="text-[11px] text-ink-500">
+                    floor({type.total_rooms} × {percent}%) = {buffer}
+                  </p>
+                  {buffer === 0 && percent > 0 && (
+                    <p className="text-[11px] font-medium text-accent-700">Rounds down to 0 rooms.</p>
+                  )}
+                </div>
+                <div className="rounded-xl bg-sand-50 px-3 py-2 text-sm">
+                  <p className="text-xs font-semibold text-ink-500 uppercase">Base max sellable</p>
                   <p className="font-semibold text-ink-900">{Number(type.total_rooms) + buffer} rooms</p>
                 </div>
                 <button type="submit" className="btn-primary">Save</button>
@@ -574,63 +545,21 @@ export function AdminDashboard() {
       )}
 
       {tab === 'amenities' && (
-        <div className="mt-6 grid gap-5 lg:grid-cols-[1fr_340px]">
-          <section className="card p-5">
-            <SectionHeading title="Amenities & room-type features" detail="A flexible MongoDB document. Edit the JSON directly; it is validated before saving." />
-            <label>
-              <span className="label">Hotel</span>
-              <select value={featureHotel} onChange={(event) => void loadFeatures(event.target.value)} className={field}>
-                <option value="">Choose a hotel</option>
-                {hotels.map((hotel) => <option key={hotel.hotel_id} value={hotel.hotel_id}>{hotel.hotel_name}</option>)}
-              </select>
-            </label>
-            <label className="mt-4 block">
-              <span className="label">Document JSON</span>
-              <textarea
-                value={featureText}
-                onChange={(event) => setFeatureText(event.target.value)}
-                spellCheck={false}
-                className={`${field} min-h-80 font-mono text-xs`}
-                disabled={featureLoading}
-              />
-            </label>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button type="button" onClick={() => void saveFeatures()} disabled={!featureHotel || featureLoading} className="btn-primary">
-                Save features
-              </button>
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => {
-                  try {
-                    setFeatureText(JSON.stringify(JSON.parse(featureText), null, 2));
-                    setError('');
-                  } catch {
-                    setError('That is not valid JSON.');
-                  }
-                }}
-              >
-                Format JSON
-              </button>
+        <div className="mt-6">
+          {hotels.length ? (
+            <AdminAmenitiesEditor hotels={hotels} roomTypes={types} />
+          ) : (
+            <div className="card-muted p-8 text-center">
+              <p className="font-semibold text-ink-800">No hotels yet</p>
+              <p className="muted mt-1">Create a hotel in the Catalog tab before editing amenities.</p>
             </div>
-          </section>
-          <aside className="card-muted h-fit p-5 text-sm text-ink-700">
-            <h3 className="font-semibold text-ink-900">Document shape</h3>
-            <pre className="mt-3 overflow-x-auto rounded-xl bg-ink-950 p-4 font-mono text-[11px] leading-5 text-ink-100">{`{
-  "amenities": {
-    "general": ["free wifi"],
-    "wellness": ["pool"],
-    "policies": { "pet_friendly": true }
-  },
-  "room_type_features": {
-    "Deluxe": { "ac": true, "tv": "43 inch" }
-  }
-}`}</pre>
-            <p className="muted mt-3">
-              General and wellness amenities are shown as chips on the public hotel page. Room-type keys
-              must match the room type names exactly.
-            </p>
-          </aside>
+          )}
+        </div>
+      )}
+
+      {tab === 'inventory' && (
+        <div className="mt-6">
+          <AdminInventoryChart hotels={hotels} />
         </div>
       )}
 

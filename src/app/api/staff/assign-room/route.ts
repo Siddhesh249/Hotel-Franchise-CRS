@@ -30,7 +30,8 @@ export async function POST(req: NextRequest) {
     const [rows] = await pool.execute<any[]>(
       `SELECT b.booking_status, b.room_type_id, rt.hotel_id AS booking_hotel,
               r.hotel_id AS room_hotel, r.room_type_id AS room_type, r.room_status, r.room_number,
-              (SELECT COUNT(*) FROM room_assignment ra WHERE ra.booking_id = b.booking_id) AS assigned
+              (SELECT COUNT(*) FROM room_assignment ra WHERE ra.booking_id = b.booking_id) AS assigned,
+              (SELECT COUNT(*) FROM payment p WHERE p.booking_id = b.booking_id AND p.payment_status = 'Completed') AS paid_count
          FROM booking b
          JOIN room_type rt ON rt.room_type_id = b.room_type_id
          LEFT JOIN room r ON r.room_id = ?
@@ -45,6 +46,9 @@ export async function POST(req: NextRequest) {
     }
     if (!['Confirmed', 'CheckedIn'].includes(String(row.booking_status))) {
       return apiError('NOT_ASSIGNABLE', 'Only a confirmed booking can be assigned a room', 409);
+    }
+    if (Number(row.paid_count) === 0) {
+      return apiError('PAYMENT_REQUIRED', 'Payment must be completed before a room can be assigned', 409);
     }
     if (Number(row.room_type) !== Number(row.room_type_id)) {
       return apiError('ROOM_TYPE_MISMATCH', 'That room does not belong to the booked room type', 400);

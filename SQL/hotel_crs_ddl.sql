@@ -85,7 +85,6 @@ CREATE TABLE guest (
 ) ENGINE=InnoDB;
 
 ALTER TABLE guest ADD COLUMN password_hash VARCHAR(255) NOT NULL DEFAULT '';
-ALTER TABLE guest ADD COLUMN is_synthetic BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE TABLE staff_account (
     staff_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -126,32 +125,6 @@ BEGIN
 END$$
 DELIMITER ;
 
--- The clock starts PAUSED so that "today" is stable while a human browses and
--- books. An Admin resumes it from /admin/clock when they want the live demo
--- (or the simulation engine) to move time forward.
-CREATE TABLE sim_clock (
-    clock_id TINYINT PRIMARY KEY DEFAULT 1,
-    virtual_now DATETIME NOT NULL,
-    tick_minutes INT NOT NULL DEFAULT 60,
-    is_running BOOLEAN NOT NULL DEFAULT FALSE,
-    CONSTRAINT chk_single_clock_row CHECK (clock_id = 1)
-) ENGINE=InnoDB;
-
-INSERT INTO sim_clock (clock_id, virtual_now, tick_minutes, is_running)
-VALUES (1, NOW(), 60, FALSE);
-
-DELIMITER $$
-CREATE EVENT evt_clock_tick
-ON SCHEDULE EVERY 1 SECOND
-DO
-BEGIN
-    UPDATE sim_clock SET virtual_now = virtual_now + INTERVAL tick_minutes MINUTE
-    WHERE clock_id = 1 AND is_running = TRUE;
-END$$
-DELIMITER ;
-
-ALTER EVENT evt_clock_tick DISABLE;
-
 -- ============================================================================
 -- SECTION 2: The overbooking engine's own tables
 -- ============================================================================
@@ -182,6 +155,37 @@ CREATE TABLE room_type_inventory (
     CONSTRAINT uq_inv_roomtype_date UNIQUE (room_type_id, stay_date),
     CONSTRAINT chk_booked_nonneg CHECK (booked_count >= 0)
 ) ENGINE=InnoDB;
+
+-- Adaptive daily inventory plan (one row per hotel per night).
+--
+-- Physical rooms never change. The soft buffer does: it is recalculated for
+-- each night from the PREVIOUS night's hotel occupancy.
+--   * previous night under physical capacity -> buffer grows (sell more tomorrow)
+--   * previous night over physical capacity  -> buffer shrinks (be conservative)
+-- sp_refresh_hotel_inventory_plan() materialises these rows for the admin chart.
+-- fn_dynamic_buffer_rooms() is the same rule used by availability/booking, so
+-- the chart and the engine cannot drift apart.
+CREATE TABLE daily_inventory_plan (
+    plan_id             BIGINT AUTO_INCREMENT PRIMARY KEY,
+    hotel_id            INT NOT NULL,
+    stay_date           DATE NOT NULL,
+    physical_rooms      INT NOT NULL,
+    base_buffer_rooms   INT NOT NULL DEFAULT 0,
+    buffer_rooms        INT NOT NULL DEFAULT 0,
+    max_sellable_rooms  INT NOT NULL,
+    booked_rooms        INT NOT NULL DEFAULT 0,
+    generated_on        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                         ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_daily_plan_hotel FOREIGN KEY (hotel_id)
+        REFERENCES hotel(hotel_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT uq_daily_plan_hotel_date UNIQUE (hotel_id, stay_date),
+    CONSTRAINT chk_plan_nonneg CHECK (
+        physical_rooms >= 0 AND base_buffer_rooms >= 0
+        AND buffer_rooms >= 0 AND booked_rooms >= 0
+    )
+) ENGINE=InnoDB;
+
+CREATE INDEX idx_daily_plan_date ON daily_inventory_plan (stay_date);
 
 -- ============================================================================
 -- SECTION 3: Transactional tables
@@ -275,18 +279,81 @@ JOIN hotel h              ON h.hotel_id = rt.hotel_id
 LEFT JOIN overbooking_policy op ON op.room_type_id = rt.room_type_id;
 
 -- ============================================================================
--- SECTION 6: Overbooking logic -- read-only helper function
--- Rooms left for ONE specific room_type on ONE specific night, buffer included.
--- Used for ad-hoc availability checks / reporting. Does NOT lock rows -- the
--- transactional procedures below do their own locking read for the real
--- accept/reject decision.
+-- SECTION 6: Overbooking logic -- adaptive, read-only helper functions
+--
+-- fn_dynamic_buffer_rooms() is the feedback controller that makes the sales
+-- ceiling react to demand. It starts from the room type's base buffer
+-- (floor(total_rooms * overbook_percentage / 100)) and looks at the previous
+-- night's occupancy for the WHOLE hotel:
+--   * previous night below physical capacity -> raise tomorrow's buffer
+--   * previous night above physical capacity -> lower tomorrow's buffer
+-- The adjustment is proportional to the slack and is capped at +/- the base
+-- buffer, so it can never invert or run away. When the previous night has no
+-- ledger rows at all (no demand signal yet), the base buffer is used.
+--
+-- Rooms left for ONE specific room_type on ONE specific night uses the same
+-- adaptive buffer. Availability is therefore consistent with the chart and the
+-- booking procedures. These functions are read-only; the transactional
+-- procedures below still take their own locking read for accept/reject.
 -- ============================================================================
 
 DELIMITER $$
 
+CREATE FUNCTION fn_dynamic_buffer_rooms(p_room_type_id INT, p_stay_date DATE)
+RETURNS INT
+READS SQL DATA
+BEGIN
+    DECLARE v_hotel_id        INT DEFAULT NULL;
+    DECLARE v_base_buffer     INT DEFAULT 0;
+    DECLARE v_hotel_physical  INT DEFAULT 0;
+    DECLARE v_prev_rows       INT DEFAULT 0;
+    DECLARE v_prev_booked     INT DEFAULT 0;
+    DECLARE v_adjustment      INT DEFAULT 0;
+
+    SELECT rt.hotel_id,
+           FLOOR(rt.total_rooms * COALESCE(op.overbook_percentage, 0) / 100)
+      INTO v_hotel_id, v_base_buffer
+    FROM room_type rt
+    LEFT JOIN overbooking_policy op ON op.room_type_id = rt.room_type_id
+    WHERE rt.room_type_id = p_room_type_id;
+
+    IF v_hotel_id IS NULL OR v_base_buffer <= 0 OR p_stay_date IS NULL THEN
+        RETURN 0;
+    END IF;
+
+    SELECT COALESCE(SUM(rt.total_rooms), 0)
+      INTO v_hotel_physical
+    FROM room_type rt
+    WHERE rt.hotel_id = v_hotel_id;
+
+    SELECT COUNT(*), COALESCE(SUM(i.booked_count), 0)
+      INTO v_prev_rows, v_prev_booked
+    FROM room_type_inventory i
+    JOIN room_type rt ON rt.room_type_id = i.room_type_id
+    WHERE rt.hotel_id = v_hotel_id
+      AND i.stay_date = DATE_SUB(p_stay_date, INTERVAL 1 DAY);
+
+    IF v_prev_rows = 0 OR v_hotel_physical = 0 THEN
+        RETURN v_base_buffer;
+    END IF;
+
+    IF v_prev_booked < v_hotel_physical THEN
+        SET v_adjustment = CEIL((v_hotel_physical - v_prev_booked) * v_base_buffer / v_hotel_physical);
+    ELSEIF v_prev_booked > v_hotel_physical THEN
+        SET v_adjustment = -CEIL((v_prev_booked - v_hotel_physical) * v_base_buffer / v_hotel_physical);
+    END IF;
+
+    IF v_adjustment > v_base_buffer THEN
+        SET v_adjustment = v_base_buffer;
+    ELSEIF v_adjustment < -v_base_buffer THEN
+        SET v_adjustment = -v_base_buffer;
+    END IF;
+
+    RETURN GREATEST(0, v_base_buffer + v_adjustment);
+END$$
+
 CREATE FUNCTION fn_available_rooms(p_room_type_id INT, p_stay_date DATE)
 RETURNS INT
-DETERMINISTIC
 READS SQL DATA
 BEGIN
     DECLARE v_total_rooms INT DEFAULT 0;
@@ -296,14 +363,104 @@ BEGIN
     SELECT total_rooms INTO v_total_rooms
     FROM room_type WHERE room_type_id = p_room_type_id;
 
-    SET v_buffer = FLOOR(v_total_rooms * COALESCE(
-        (SELECT overbook_percentage FROM overbooking_policy WHERE room_type_id = p_room_type_id), 0) / 100);
+    SET v_buffer = fn_dynamic_buffer_rooms(p_room_type_id, p_stay_date);
 
     SET v_booked = COALESCE(
         (SELECT booked_count FROM room_type_inventory
          WHERE room_type_id = p_room_type_id AND stay_date = p_stay_date), 0);
 
     RETURN (v_total_rooms + v_buffer) - v_booked;
+END$$
+
+-- Rebuild the materialised daily plan for one hotel.
+CREATE PROCEDURE sp_refresh_hotel_inventory_plan(
+    IN p_hotel_id    INT,
+    IN p_start_date  DATE,
+    IN p_days        INT
+)
+this_proc: BEGIN
+    DECLARE v_day             INT DEFAULT 0;
+    DECLARE v_date            DATE;
+    DECLARE v_physical        INT DEFAULT 0;
+    DECLARE v_base_buffer     INT DEFAULT 0;
+    DECLARE v_dynamic_buffer  INT DEFAULT 0;
+    DECLARE v_max_sellable    INT DEFAULT 0;
+    DECLARE v_booked          INT DEFAULT 0;
+
+    IF p_hotel_id IS NULL OR p_start_date IS NULL OR p_days IS NULL
+       OR p_days < 1 OR p_days > 366 THEN
+        LEAVE this_proc;
+    END IF;
+
+    SELECT COALESCE(SUM(rt.total_rooms), 0),
+           COALESCE(SUM(FLOOR(rt.total_rooms * COALESCE(op.overbook_percentage, 0) / 100)), 0)
+      INTO v_physical, v_base_buffer
+    FROM room_type rt
+    LEFT JOIN overbooking_policy op ON op.room_type_id = rt.room_type_id
+    WHERE rt.hotel_id = p_hotel_id;
+
+    DELETE FROM daily_inventory_plan
+     WHERE hotel_id = p_hotel_id
+       AND stay_date BETWEEN p_start_date
+                         AND DATE_ADD(p_start_date, INTERVAL p_days - 1 DAY);
+
+    WHILE v_day < p_days DO
+        SET v_date = DATE_ADD(p_start_date, INTERVAL v_day DAY);
+
+        SELECT COALESCE(SUM(i.booked_count), 0)
+          INTO v_booked
+        FROM room_type_inventory i
+        JOIN room_type rt ON rt.room_type_id = i.room_type_id
+        WHERE rt.hotel_id = p_hotel_id
+          AND i.stay_date = v_date;
+
+        SELECT COALESCE(SUM(rt.total_rooms + fn_dynamic_buffer_rooms(rt.room_type_id, v_date)), 0)
+          INTO v_max_sellable
+        FROM room_type rt
+        WHERE rt.hotel_id = p_hotel_id;
+
+        SET v_dynamic_buffer = GREATEST(0, v_max_sellable - v_physical);
+
+        INSERT INTO daily_inventory_plan
+            (hotel_id, stay_date, physical_rooms, base_buffer_rooms,
+             buffer_rooms, max_sellable_rooms, booked_rooms)
+        VALUES
+            (p_hotel_id, v_date, v_physical, v_base_buffer,
+             v_dynamic_buffer, v_max_sellable, v_booked)
+        ON DUPLICATE KEY UPDATE
+            physical_rooms     = VALUES(physical_rooms),
+            base_buffer_rooms  = VALUES(base_buffer_rooms),
+            buffer_rooms       = VALUES(buffer_rooms),
+            max_sellable_rooms = VALUES(max_sellable_rooms),
+            booked_rooms       = VALUES(booked_rooms),
+            generated_on       = CURRENT_TIMESTAMP;
+
+        SET v_day = v_day + 1;
+    END WHILE;
+END$$
+
+-- Rebuild the plan for every hotel (used by the "All hotels" chart view).
+CREATE PROCEDURE sp_refresh_inventory_plan(
+    IN p_start_date DATE,
+    IN p_days       INT
+)
+BEGIN
+    DECLARE v_done     INT DEFAULT 0;
+    DECLARE v_hotel_id INT;
+
+    DECLARE hotel_cursor CURSOR FOR
+        SELECT hotel_id FROM hotel ORDER BY hotel_id;
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_done = 1;
+
+    OPEN hotel_cursor;
+    read_hotels: LOOP
+        FETCH hotel_cursor INTO v_hotel_id;
+        IF v_done = 1 THEN
+            LEAVE read_hotels;
+        END IF;
+        CALL sp_refresh_hotel_inventory_plan(v_hotel_id, p_start_date, p_days);
+    END LOOP;
+    CLOSE hotel_cursor;
 END$$
 
 DELIMITER ;
@@ -326,13 +483,12 @@ DELIMITER $$
 
 CREATE PROCEDURE sp_try_promote_waitlist(IN p_booking_id INT)
 this_proc: BEGIN
-    DECLARE v_room_type_id  INT;
-    DECLARE v_check_in      DATE;
-    DECLARE v_check_out     DATE;
-    DECLARE v_total_rooms   INT;
-    DECLARE v_overbook_pct  DECIMAL(5,2);
-    DECLARE v_buffer        INT;
-    DECLARE v_min_avail     INT;
+    DECLARE v_room_type_id     INT;
+    DECLARE v_check_in         DATE;
+    DECLARE v_check_out        DATE;
+    DECLARE v_total_rooms      INT;
+    DECLARE v_min_avail        INT;
+    DECLARE v_min_physical_avail INT;
 
     SELECT room_type_id, check_in_date, check_out_date
     INTO v_room_type_id, v_check_in, v_check_out
@@ -343,21 +499,22 @@ this_proc: BEGIN
     END IF;
 
     SELECT total_rooms INTO v_total_rooms FROM room_type WHERE room_type_id = v_room_type_id;
-    SET v_overbook_pct = COALESCE(
-        (SELECT overbook_percentage FROM overbooking_policy WHERE room_type_id = v_room_type_id), 0);
-    SET v_buffer = FLOOR(v_total_rooms * v_overbook_pct / 100);
 
     START TRANSACTION;
 
-    SELECT MIN((v_total_rooms + v_buffer) - booked_count) INTO v_min_avail
-    FROM room_type_inventory
-    WHERE room_type_id = v_room_type_id
-      AND stay_date >= v_check_in AND stay_date < v_check_out
+    SELECT MIN(rt.total_rooms + fn_dynamic_buffer_rooms(rt.room_type_id, i.stay_date) - i.booked_count),
+           MIN(rt.total_rooms - i.booked_count)
+      INTO v_min_avail, v_min_physical_avail
+    FROM room_type_inventory i
+    JOIN room_type rt ON rt.room_type_id = i.room_type_id
+    WHERE i.room_type_id = v_room_type_id
+      AND i.stay_date >= v_check_in AND i.stay_date < v_check_out
     FOR UPDATE;
 
     IF v_min_avail >= 1 THEN
         UPDATE booking
-        SET booking_status = 'Confirmed', is_overbooked = (v_min_avail <= v_buffer)
+        SET booking_status = 'Confirmed',
+            is_overbooked = (v_min_physical_avail < 1)
         WHERE booking_id = p_booking_id;
 
         UPDATE room_type_inventory
@@ -381,10 +538,9 @@ CREATE PROCEDURE sp_create_booking(
 this_proc: BEGIN
     DECLARE v_date         DATE;
     DECLARE v_min_avail    INT;
+    DECLARE v_min_physical_avail INT;
     DECLARE v_total_rooms  INT;
     DECLARE v_max_occupancy TINYINT;
-    DECLARE v_overbook_pct DECIMAL(5,2);
-    DECLARE v_buffer       INT;
     DECLARE v_price        DECIMAL(10,2);
     DECLARE v_nights       INT;
 
@@ -417,9 +573,6 @@ this_proc: BEGIN
         LEAVE this_proc;
     END IF;
 
-    SET v_overbook_pct = COALESCE(
-        (SELECT overbook_percentage FROM overbooking_policy WHERE room_type_id = p_room_type_id), 0);
-    SET v_buffer  = FLOOR(v_total_rooms * v_overbook_pct / 100);
     SET v_nights  = DATEDIFF(p_check_out, p_check_in);
 
     START TRANSACTION;
@@ -431,20 +584,23 @@ this_proc: BEGIN
         SET v_date = DATE_ADD(v_date, INTERVAL 1 DAY);
     END WHILE;
 
-    SELECT MIN((v_total_rooms + v_buffer) - booked_count) INTO v_min_avail
-    FROM room_type_inventory
-    WHERE room_type_id = p_room_type_id
-      AND stay_date >= p_check_in AND stay_date < p_check_out
+    SELECT MIN(rt.total_rooms + fn_dynamic_buffer_rooms(rt.room_type_id, i.stay_date) - i.booked_count),
+           MIN(rt.total_rooms - i.booked_count)
+      INTO v_min_avail, v_min_physical_avail
+    FROM room_type_inventory i
+    JOIN room_type rt ON rt.room_type_id = i.room_type_id
+    WHERE i.room_type_id = p_room_type_id
+      AND i.stay_date >= p_check_in AND i.stay_date < p_check_out
     FOR UPDATE;
 
     IF v_min_avail >= 1 THEN
         INSERT INTO booking (guest_id, room_type_id, check_in_date, check_out_date,
                               num_guests, booking_status, is_overbooked, total_amount)
         VALUES (p_guest_id, p_room_type_id, p_check_in, p_check_out, p_num_guests,
-                'Confirmed', (v_min_avail <= v_buffer), v_price * v_nights);
+                'Confirmed', (v_min_physical_avail < 1), v_price * v_nights);
 
         SET p_booking_id = LAST_INSERT_ID();
-        SET p_status = IF(v_min_avail <= v_buffer, 'CONFIRMED_OVERBOOKED', 'CONFIRMED');
+        SET p_status = IF(v_min_physical_avail < 1, 'CONFIRMED_OVERBOOKED', 'CONFIRMED');
 
         UPDATE room_type_inventory
         SET booked_count = booked_count + 1
@@ -512,6 +668,11 @@ this_proc: BEGIN
 
     UPDATE payment SET payment_status = 'Refunded'
     WHERE booking_id = p_booking_id AND payment_status = 'Completed';
+
+    -- A cancelled stay releases its physical room. The overlap trigger already
+    -- ignores cancelled bookings, but keeping the stale assignment would make
+    -- the staff desk show a room on a dead booking.
+    DELETE FROM room_assignment WHERE booking_id = p_booking_id;
 
     COMMIT;
 

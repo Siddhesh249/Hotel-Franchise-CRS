@@ -8,8 +8,9 @@
 
 import pool from '@/lib/db';
 import type { RowDataPacket } from 'mysql2';
+import { connection } from 'next/server';
 import { getMongoClient, mongoDbName } from '@/lib/mongodb';
-import { addDaysIso } from '@/lib/format';
+import { addDaysIso, todayIso } from '@/lib/format';
 import { withAvailability, validStay, stayDates } from '@/lib/availability';
 import type { HotelDetail, HotelFeatures, HotelListItem, RoomType, RoomTypeWithAvailability } from '@/types';
 
@@ -42,24 +43,14 @@ async function allFeatures(): Promise<Map<number, HotelFeatures>> {
   }
 }
 
-/** The virtual clock's current calendar date, falling back to the real one. */
-export async function getVirtualToday(): Promise<string> {
-  try {
-    const [rows] = await pool.query<any[]>(
-      "SELECT DATE_FORMAT(virtual_now, '%Y-%m-%d') AS today FROM sim_clock WHERE clock_id = 1",
-    );
-    if (rows[0]?.today) return String(rows[0].today);
-  } catch {
-    /* fall through to the wall clock */
-  }
-  return new Date().toISOString().slice(0, 10);
-}
-
 /** Resolve optional search dates into a valid stay, defaulting to tomorrow + 2 nights. */
 export async function resolveStay(checkIn?: string | null, checkOut?: string | null) {
   const parsed = validStay(checkIn, checkOut);
   if (parsed) return parsed;
-  const today = await getVirtualToday();
+  // Reading the real clock is request-time data; opt in before calling it so
+  // Cache Components does not try to bake "today" into the static shell.
+  await connection();
+  const today = todayIso();
   const start = addDaysIso(today, 1);
   const end = addDaysIso(start, 2);
   return { checkIn: start, checkOut: end, nights: 2 };
