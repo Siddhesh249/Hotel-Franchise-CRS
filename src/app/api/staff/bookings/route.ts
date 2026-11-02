@@ -2,7 +2,7 @@
  * GET /api/staff/bookings
  *
  * Staff only (scoped to session.hotelId). Admins may pass ?hotel_id= to inspect
- * any property. Returns the hotel, the virtual "today", and every booking.
+ * any property. Returns the hotel, today's real date, and every booking.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -32,8 +32,8 @@ export async function GET(req: NextRequest) {
     );
     if (!hotels.length) return apiError('NOT_FOUND', 'Hotel not found', 404);
 
-    const [clock] = await pool.query<any[]>(
-      "SELECT DATE_FORMAT(virtual_now, '%Y-%m-%d') AS today FROM sim_clock WHERE clock_id = 1",
+    const [todayRows] = await pool.query<any[]>(
+      "SELECT DATE_FORMAT(CURRENT_DATE, '%Y-%m-%d') AS today",
     );
 
     const [bookings] = await pool.execute<any[]>(
@@ -41,7 +41,7 @@ export async function GET(req: NextRequest) {
               b.num_guests, b.special_requests, b.booking_date, b.booking_status,
               b.is_overbooked, b.total_amount,
               DATEDIFF(b.check_out_date, b.check_in_date) AS nights,
-              g.first_name, g.last_name, g.email, g.phone, g.is_synthetic,
+              g.first_name, g.last_name, g.email, g.phone,
               rt.type_name, rt.base_price, rt.max_occupancy,
               h.hotel_id, h.hotel_name, h.city, h.state,
               p.payment_id, p.payment_status, p.payment_method, p.amount AS paid_amount,
@@ -62,7 +62,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       hotel: hotels[0],
-      today: clock[0]?.today ?? new Date().toISOString().slice(0, 10),
+      today: todayRows[0]?.today ?? new Date().toISOString().slice(0, 10),
       bookings,
     });
   } catch {

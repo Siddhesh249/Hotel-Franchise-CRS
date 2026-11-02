@@ -67,7 +67,6 @@ export interface Guest {
   phone: string | null;
   address: string | null;
   registered_on: string; // DATE
-  is_synthetic: boolean;
   // password_hash intentionally omitted from client-facing type
 }
 
@@ -134,7 +133,6 @@ export interface StaffBooking extends BookingWithDetails {
   last_name: string;
   email: string;
   phone: string | null;
-  is_synthetic: boolean;
 }
 
 export interface RoomAssignment {
@@ -151,13 +149,6 @@ export interface Payment {
   payment_method: string;
   payment_status: 'Pending' | 'Completed' | 'Refunded' | 'Failed';
   payment_date: string; // DATETIME
-}
-
-export interface SimClock {
-  clock_id: 1;
-  virtual_now: string; // DATETIME
-  tick_minutes: number;
-  is_running: boolean;
 }
 
 // ---------------------------------------------------------------------------

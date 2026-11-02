@@ -24,10 +24,7 @@ requirements:
 - A Next.js web application (public site + three authenticated portals) with an API
   layer in front of both databases.
 - Role-based authentication and authorization (Guest, Staff, Admin).
-- A virtual clock subsystem that can run, pause, resume, and fast-forward
-  independently of wall-clock time, persisted so it survives restarts.
-- A simulation engine that drives synthetic guest traffic through the system for
-  demo purposes.
+- Real calendar dates for availability, booking, and reporting.
 - Simulated (non-real) payments.
 
 ## 2. Actors
@@ -35,10 +32,9 @@ requirements:
 | Actor | Description |
 |---|---|
 | Public visitor | No account. Browses the marketing site and hotel listings. |
-| Guest | Registered customer. Searches, books, cancels, views own bookings. |
+| Guest | Registered customer. Searches, books, pays, cancels, views own bookings. |
 | Staff | Employee scoped to exactly one hotel (`hotel_id` set). Manages that hotel's arrivals and physical room assignment. |
-| Admin | Franchise-level employee (`hotel_id` is NULL). Manages hotels, room types, overbooking policy, amenities, reports, the virtual clock, and the simulation engine. |
-| Simulation engine | Not a human actor — a backend process, started/stopped/configured by Admin, that acts as many synthetic Guests to generate demo traffic. |
+| Admin | Franchise-level employee (`hotel_id` is NULL). Manages hotels, room types, overbooking policy, amenities, reports, and the inventory chart. |
 
 ## 3. High-level architecture
 
@@ -55,7 +51,6 @@ flowchart TB
         FE[Frontend — pages/components]
         API[API routes / route handlers]
         AUTH[Auth.js — session + role checks]
-        SIM[Simulation engine service]
     end
 
     subgraph Data["Data layer"]
@@ -67,9 +62,6 @@ flowchart TB
     API --> AUTH
     API -->|mysql2, CALL stored procs| SQL
     API -->|mongodb driver| MONGO
-    SIM -->|same stored procs| SQL
-    SIM -.controlled by Admin via API.-> API
-    SQL -.virtual_now.-> SIM
 ```
 
 **Components**
@@ -77,29 +69,25 @@ flowchart TB
 1. **Next.js frontend** — server-rendered pages for the public site and the three
    portals. No business logic lives here; it renders what the API returns and
    submits forms to API routes.
-2. **API / backend layer** — Next.js API routes (or Route Handlers). Every write and
-   every read that touches either database goes through here. Owns: input
-   validation, calling stored procedures, merging SQL + Mongo responses, enforcing
-   auth/roles, translating DB errors (including the `SQLSTATE 45000` trigger signal)
-   into clean API error responses.
-3. **MariaDB (SQL core)** — unchanged schema plus the additions in §5–§7 below.
-   Holds all transactional and structural data: franchise/hotel/room hierarchy,
-   bookings, payments, staff/guest accounts, overbooking policy, the virtual clock.
+2. **API / backend layer** — Next.js Route Handlers. Every write and every read
+   that touches either database goes through here. Owns: input validation,
+   calling stored procedures, merging SQL + Mongo responses, enforcing
+   auth/roles, translating DB errors (including the `SQLSTATE 45000` trigger
+   signal) into clean API error responses.
+3. **MariaDB (SQL core)** — unchanged schema plus the additions below. Holds all
+   transactional and structural data: franchise/hotel/room hierarchy, bookings,
+   payments, staff/guest accounts, and overbooking policy.
 4. **MongoDB (`hotel_features` collection)** — one flexible document per hotel,
    holding amenities and per-room-type feature sets. Never holds anything that is
    also a row in MariaDB (no duplication, no sync problem).
 5. **Auth.js** — credentials-based login, one JWT session shape shared by Guest,
    Staff, and Admin, differentiated by a `role` claim (and `hotelId` for Staff).
-6. **Simulation engine** — an in-process service (not a serverless function —
-   see §7) that, when started by Admin, periodically calls the same
-   `sp_create_booking` / `sp_cancel_booking` procedures the real API uses, acting as
-   synthetic guests.
 
 ## 4. Data architecture
 
 ### 4.1 MariaDB — relational core
 
-**Existing tables (unchanged — see `hotel_crs_ddl.sql` for full DDL):**
+**Core tables (see `hotel_crs_ddl.sql` for full DDL):**
 
 | Table | Purpose |
 |---|---|
@@ -108,20 +96,24 @@ flowchart TB
 | `room_type` | Sellable room categories per hotel (price, occupancy, physical count). |
 | `room` | Physical rooms, one row per real room. |
 | `guest` | Customer records. |
-| `overbooking_policy` | Per-room-type overbook percentage. |
+| `overbooking_policy` | Per-room-type **base** overbook percentage. |
 | `room_type_inventory` | Per-night booked-count ledger — the row the engine locks. |
+| `daily_inventory_plan` | Materialised per-hotel/per-night physical, base-buffer, adaptive-buffer, max-sellable, and booked counts for the admin chart. Rebuilt by the refresh procedures; it is a read model, not a second source of truth. |
 | `booking` | A reservation for a room *type* (not a physical room) with status, including `Waitlisted`. |
 | `room_assignment` | Physical room ↔ booking link, created at/near check-in. |
 | `payment` | Payment records (simulated — see §8). |
 | `cancellation_history` | Audit trail of cancellations. |
 
-**Existing view / function / procedures / trigger:**
+**View / function / procedures / trigger:**
 
 | Object | Type | Purpose |
 |---|---|---|
-| `vw_roomtype_overview` | View | Per-room-type capacity + buffer + max sellable rooms. |
-| `fn_available_rooms(room_type_id, stay_date)` | Function | Read-only rooms-left check for one night. |
-| `sp_create_booking(...)` | Procedure | The core accept/overbook/waitlist decision. Locks the tightest night in the stay range with `SELECT ... FOR UPDATE`, then confirms, confirms-overbooked, or waitlists. |
+| `vw_roomtype_overview` | View | Per-room-type capacity + **base** buffer + base max sellable rooms. Static; not date-specific. |
+| `fn_dynamic_buffer_rooms(room_type_id, stay_date)` | Function | The adaptive feedback rule. Starts from the base buffer and adds/subtracts a proportional adjustment based on the previous night’s whole-hotel occupancy, capped at ± base. Returns the base buffer when the previous night has no ledger rows. |
+| `fn_available_rooms(room_type_id, stay_date)` | Function | Read-only rooms-left check for one night. Uses the same adaptive buffer as the booking procedures. |
+| `sp_refresh_hotel_inventory_plan(hotel_id, start_date, days)` | Procedure | Rebuilds `daily_inventory_plan` for one hotel over a date range. |
+| `sp_refresh_inventory_plan(start_date, days)` | Procedure | Loops over every hotel and calls the per-hotel refresh. |
+| `sp_create_booking(...)` | Procedure | The core accept/overbook/waitlist decision. Locks the tightest night in the stay range with `SELECT ... FOR UPDATE`, then confirms, confirms-overbooked, or waitlists. Uses `fn_dynamic_buffer_rooms()` per night. |
 | `sp_cancel_booking(booking_id, reason)` | Procedure | Cancels, frees ledger rows, logs to `cancellation_history`, then attempts FIFO waitlist promotion. |
 | `sp_try_promote_waitlist(booking_id)` | Procedure | Re-runs the lock-and-check logic for the oldest waitlisted booking after a cancellation. |
 | `trg_prevent_room_double_assignment` | Trigger (`BEFORE INSERT ON room_assignment`) | Hard-layer guarantee: refuses an overlapping-date double assignment of one physical room, raising `SIGNAL SQLSTATE '45000'`. |
@@ -145,22 +137,39 @@ CREATE TABLE staff_account (
     CONSTRAINT uq_staff_email UNIQUE (email)
 ) ENGINE=InnoDB;
 
--- Guest self-service login + simulation tagging.
+-- Guest self-service login.
 ALTER TABLE guest ADD COLUMN password_hash VARCHAR(255) NOT NULL DEFAULT '';
-ALTER TABLE guest ADD COLUMN is_synthetic  BOOLEAN NOT NULL DEFAULT FALSE;
 
--- The virtual clock. Single-row table (clock_id is always 1).
-CREATE TABLE sim_clock (
-    clock_id      TINYINT PRIMARY KEY DEFAULT 1,
-    virtual_now   DATETIME NOT NULL,
-    tick_minutes  INT NOT NULL DEFAULT 60,   -- virtual minutes advanced per real tick
-    is_running    BOOLEAN NOT NULL DEFAULT FALSE,
-    CONSTRAINT chk_single_clock_row CHECK (clock_id = 1)
+-- Adaptive inventory read model. Physical capacity is constant; the buffer and
+-- max-sellable columns are recomputed per night from the previous night's
+-- occupancy by sp_refresh_hotel_inventory_plan().
+CREATE TABLE daily_inventory_plan (
+    plan_id             BIGINT AUTO_INCREMENT PRIMARY KEY,
+    hotel_id            INT NOT NULL,
+    stay_date           DATE NOT NULL,
+    physical_rooms      INT NOT NULL,
+    base_buffer_rooms   INT NOT NULL DEFAULT 0,
+    buffer_rooms        INT NOT NULL DEFAULT 0,
+    max_sellable_rooms  INT NOT NULL,
+    booked_rooms        INT NOT NULL DEFAULT 0,
+    generated_on        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                         ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_daily_plan_hotel FOREIGN KEY (hotel_id)
+        REFERENCES hotel(hotel_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT uq_daily_plan_hotel_date UNIQUE (hotel_id, stay_date),
+    CONSTRAINT chk_plan_nonneg CHECK (
+        physical_rooms >= 0 AND base_buffer_rooms >= 0
+        AND buffer_rooms >= 0 AND booked_rooms >= 0
+    )
 ) ENGINE=InnoDB;
-
-INSERT INTO sim_clock (clock_id, virtual_now, tick_minutes, is_running)
-VALUES (1, NOW(), 60, FALSE);
 ```
+
+`daily_inventory_plan` is intentionally allowed to be stale between requests.
+`GET /api/admin/reports/inventory` calls the refresh procedure for the requested
+date range before reading it, so the chart always reflects the current ledger.
+The booking engine does **not** read the plan table; it calls
+`fn_dynamic_buffer_rooms()` directly while holding row locks. That keeps the read
+model out of the transaction path.
 
 `trg_staff_account_scope_insert` and `trg_staff_account_scope_update` enforce
 the Admin/Staff `hotel_id` rule. This is deliberately a trigger rather than a
@@ -169,25 +178,9 @@ uses `ON UPDATE CASCADE`.
 
 Implementation additions on top of the original core: `booking.special_requests
 VARCHAR(500)` (the booking form's optional request), and
-`sp_cancel_booking` marks any completed payment as `Refunded` and records the
-amount in `cancellation_history.refund_amount`.
-
-**Virtual-clock event (see §5 for full discussion):**
-
-```sql
-DELIMITER $$
-CREATE EVENT evt_clock_tick
-ON SCHEDULE EVERY 1 SECOND
-DO
-BEGIN
-    UPDATE sim_clock
-    SET virtual_now = virtual_now + INTERVAL tick_minutes MINUTE
-    WHERE clock_id = 1 AND is_running = TRUE;
-END$$
-DELIMITER ;
-
-SET GLOBAL event_scheduler = ON;  -- must also be set in my.cnf to persist across server restarts
-```
+`sp_cancel_booking` marks any completed payment as `Refunded`, records the
+amount in `cancellation_history.refund_amount`, and releases the booking's
+physical `room_assignment`.
 
 ### 4.2 MongoDB — `hotel_features` collection
 
@@ -232,47 +225,22 @@ does **not** automatically delete its `hotel_features` document. The hotel-delet
 API route is responsible for issuing both deletes. An orphaned Mongo document with
 no matching `hotel_id` is treated as inert, unreferenced data — not an error state.
 
-## 5. Virtual clock subsystem
+## 5. Time model — real calendar dates
 
-**Design decision: the clock lives in the database (MariaDB event scheduler),
-not a snapshot file.** MariaDB already persists every write to disk and already
-survives restarts by design — a hand-rolled JSON snapshot file would be a second,
-separate persistence mechanism that has to be kept in sync with everything else for
-no benefit. The database is also the one component everything else (bookings,
-simulation, reports) already depends on.
+There is **no virtual clock**. The system uses the database/server's real
+calendar date (`CURDATE()` / `CURRENT_DATE`) and real timestamps for audit
+columns such as `booking.booking_date`, `payment.payment_date`, and
+`cancellation_history.cancelled_on`.
 
-- **Run** — `evt_clock_tick` fires every real second and advances
-  `sim_clock.virtual_now` by `tick_minutes` virtual minutes.
-- **Pause** — `ALTER EVENT evt_clock_tick DISABLE;` (and set `is_running = FALSE`
-  for the admin UI to read back). Time stops exactly where it was; nothing needs to
-  be "saved" because nothing has moved except a row that's already on disk.
-  The clock ships **paused** so that a human browsing and booking sees a stable
-  "today"; an Admin resumes it for a live demo.
-- **Resume** — `ALTER EVENT evt_clock_tick ENABLE;` / `is_running = TRUE`. Picks up
-  from the current `virtual_now`.
-- **Restart survival** — `sim_clock` is a table; its last value is whatever was last
-  committed. The event resumes firing on server start as long as
-  `event_scheduler = ON` is set (both at runtime and in `my.cnf`, so it survives a
-  full MariaDB restart, not just an application restart).
-- **Reset** — `UPDATE sim_clock SET virtual_now = NOW() WHERE clock_id = 1;`
-- **Fast-forward** — `UPDATE sim_clock SET virtual_now = virtual_now + INTERVAL n DAY WHERE clock_id = 1;`
-- **Rate control** — Admin updates `tick_minutes` to speed up or slow down how fast
-  virtual time moves relative to real time.
+- Availability defaults are “tomorrow + 2 nights”, derived from the real date.
+- The sample DML uses dates relative to `CURRENT_DATE`, so “today’s arrivals”
+  are populated whenever the seed is loaded.
+- Reports and the admin inventory chart show the next N real calendar days.
+- No background event scheduler is required. MariaDB's `EVENT` privilege is not
+  part of the application grant.
 
-**Virtual time vs. audit timestamps — a deliberate split.** `booking.booking_date`,
-`payment.payment_date`, `room_assignment.assigned_on`, `cancellation_history.cancelled_on`,
-and `guest.registered_on` keep their existing `DEFAULT CURRENT_TIMESTAMP` /
-`DEFAULT CURRENT_DATE` behavior — they are an audit trail of when something was
-recorded in real wall-clock time, and rewriting every stored procedure to stamp them
-with `virtual_now` instead would be invasive for no benefit. **Virtual time is used
-only for business-logic decisions that are meant to simulate the passage of time**:
-what "today" is for availability search defaults, when a confirmed booking's
-check-in date has "arrived" (for a future auto-no-show job, if built), and what
-pace the simulation engine spawns/cancels bookings at. The API layer is the only
-thing that ever reads `sim_clock.virtual_now`; stored procedures continue to accept
-explicit `DATE` parameters exactly as they do today, so **no existing procedure
-needs to be rewritten** — the API layer simply passes dates derived from
-`virtual_now` instead of from the real OS clock when the context calls for it.
+This keeps the demo deterministic and avoids a clock that moves while a human is
+trying to read or book a stay.
 
 ## 6. Authentication & authorization subsystem
 
@@ -313,50 +281,33 @@ requireOwnership(session, booking.guest_id)      // a guest may only cancel thei
 | Create/edit hotel, room type | — | — | ✓ |
 | Edit overbooking policy | — | — | ✓ |
 | Edit amenities (Mongo) | — | — | ✓ |
-| View reports (occupancy, overbooking buffer usage, amenity aggregation) | — | — | ✓ |
-| Control virtual clock | — | — | ✓ |
-| Control simulation engine | — | — | ✓ |
+| View reports (overbooking buffer usage, amenity aggregation, daily inventory chart) | — | — | ✓ |
 
-## 7. Simulation engine subsystem
+## 7. Sample data and demo preparation
 
-**Why this is an in-process service, not a stored procedure or a serverless
-function.** "Spawn a client with a profile, at a configurable rate, that sometimes
-cancels, for a set duration" is stateful, probabilistic, long-running control logic
-— comfortable in JS, awkward as nested SQL `CASE`/`RAND()` logic, and
-incompatible with a stateless serverless function (nothing would keep the loop
-running between invocations). It is implemented as a singleton service inside the
-same persistent Node server process that hosts the Next.js app (a custom server, or
-a small sidecar process reachable only by the API layer) — **not** as a Vercel-style
-edge/serverless function.
+There is **no simulation engine** and no synthetic traffic process. The demo is
+driven by seeded data plus the presenter's own actions:
 
-**Mechanics.** On each cycle, the service:
+- `hotel_crs_dml.sql` seeds six hotels / 18 room types / 100 physical rooms,
+  20 guests, seven staff/admin accounts, overbooking policies, and bookings
+  around the current real date.
+- The seed includes a paid + assigned booking, a paid + unassigned booking, and
+  a pending-payment booking so the staff desk has meaningful states.
+- The Koramangala Standard bookings exercise the overbooking buffer and the
+  waitlist promotion flow.
+- Each additional property has its own staff account (`staff.whitefield@…`,
+  `staff.hitech@…`, `staff.bkc@…`, `staff.aerocity@…`), scoped to that hotel.
+- `sp_seed_demo_demand()` adds a patterned three-week demand wave (one-night
+  stays at varying target occupancies). It is idempotent via the
+  `special_requests = 'Demo demand wave seed'` marker and skips today/tomorrow
+  for Koramangala/Andheri so the scripted overbooking walkthrough is preserved.
+- `SQL/hotel_crs_adaptive_inventory.sql` applies the adaptive schema, the new
+  properties, and the demand wave to an **existing** database without dropping
+  user data.
+- Presenters can create a guest account and make their own bookings through the
+  UI, then inspect those bookings in the staff and admin consoles.
 
-1. Reads `sim_clock.virtual_now` (never the real OS clock — simulated demand should
-   scale with virtual time, including fast-forwarded time).
-2. Rolls against the configured spawn rate; if triggered, picks a **client
-   archetype** and calls `sp_create_booking` with guest/room-type/date values drawn
-   from that archetype, using (or lazily creating) a `guest` row flagged
-   `is_synthetic = TRUE`.
-3. Separately rolls each archetype's `cancelProb` against its own still-active
-   synthetic bookings and calls `sp_cancel_booking` when triggered — this is what
-   demonstrates FIFO waitlist promotion live during a demo.
-
-**Client archetype shape** (admin-configurable, not hardcoded):
-
-```json
-{
-  "name": "budget solo",
-  "roomTypePreference": "Standard",
-  "stayNights": [1, 2],
-  "numGuests": 1,
-  "cancelProbability": 0.10
-}
-```
-
-**Admin control surface** (see API map in §9 for exact routes): start, stop,
-set overall spawn rate, fast-forward the clock, spawn one booking of a specific
-archetype on demand, and clear all synthetic data (deletes/resets rows where
-`is_synthetic = TRUE`, for a clean slate before a live demo).
+The full presentation run sheet lives in `DOCS/DEMO_GUIDE.md`.
 
 ## 8. Payment simulation
 
@@ -390,22 +341,19 @@ unfinished feature.
 | PUT | `/api/admin/hotels/:id/features` | Admin | Edits the `hotel_features` Mongo document. |
 | GET | `/api/admin/reports/overbooked` | Admin | The overbooked-bookings query from `hotel_crs_dml.sql`. |
 | GET | `/api/admin/reports/amenities` | Admin | The Mongo aggregation (amenity counts by city). |
-| GET/PUT | `/api/admin/clock` | Admin | Read/pause/resume/fast-forward/rate-change `sim_clock`. |
-| GET/POST/PUT | `/api/admin/simulation` | Admin | Start/stop/configure archetypes/spawn-one/clear synthetic data. |
+| GET | `/api/admin/reports/inventory` | Admin | Refreshes and returns the adaptive daily plan: physical rooms (flat), base buffer, adaptive buffer, max sellable, and booked counts for 7–60 real days. |
 
 ## 10. Frontend page/route map
 
 | Route | Access | Purpose |
 |---|---|---|
-| `/` | Public | Marketing landing page. |
+| `/` | Public | Marketing landing page with availability search. |
 | `/hotels`, `/hotels/[id]` | Public | Listings and detail (amenities from Mongo). |
 | `/register`, `/login` | Public | Guest self-registration; shared login form for all three roles. |
 | `/book/[roomTypeId]` | Guest | Booking form; shows the three possible outcomes explicitly. |
-| `/my-bookings` | Guest | Own bookings, cancel action, payment status. |
-| `/staff` | Staff | Dashboard scoped to `session.hotelId`: arrivals, room assignment. |
-| `/admin` | Admin | Hotel/room-type/overbooking-policy/amenities management, reports. |
-| `/admin/clock` | Admin | Virtual clock controls. |
-| `/admin/simulation` | Admin | Simulation engine controls. |
+| `/my-bookings` | Guest | Own bookings, payment, cancellation, refunds, waitlist status. |
+| `/staff` | Staff / Admin | Hotel-scoped arrivals, room assignment; Admin gets a hotel selector. |
+| `/admin` | Admin | Catalog, overbooking, structured amenities, inventory chart, reports. |
 
 ## 11. Error handling conventions
 
@@ -415,11 +363,15 @@ unfinished feature.
 - The room-assignment route specifically catches the driver-level error carrying
   `SQLSTATE '45000'` from `trg_prevent_room_double_assignment` and maps it to a
   `409` with a human-readable message — never surface a raw SQL error to the UI.
+- Room assignment requires a `Completed` payment; otherwise the API returns
+  `409 PAYMENT_REQUIRED`. This is a deliberate staff-desk gate.
+- Cancelling a paid booking marks the payment `Refunded`, records the refund in
+  `cancellation_history`, and releases the physical room assignment.
 - `sp_create_booking`'s `p_status` OUT parameter (`CONFIRMED` /
-  `CONFIRMED_OVERBOOKED` / `WAITLISTED` / `INVALID_DATES` / `ERROR`) is passed
-  straight through to the frontend so the UI can show the distinction honestly —
-  this is the single most important piece of information the booking flow
-  produces.
+  `CONFIRMED_OVERBOOKED` / `WAITLISTED` / `INVALID_DATES` /
+  `INVALID_ROOM_TYPE` / `INVALID_GUESTS` / `ERROR`) is passed straight through to
+  the frontend so the UI can show the distinction honestly — this is the single
+  most important piece of information the booking flow produces.
 
 ## 12. Environment variables
 
@@ -442,5 +394,5 @@ hardcoded in source.
 This is a course project, not a production system: no horizontal scaling, no
 connection pooling tuning, no production-grade secrets management beyond env vars.
 Priorities in order: (1) correctness of the overbooking/waitlist logic end to end
-through the UI, (2) a demo-able simulation engine, (3) clean role separation,
-(4) everything else.
+through the UI, (2) a clear, repeatable demo from seeded data, (3) clean role
+separation, (4) everything else.

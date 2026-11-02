@@ -1,19 +1,20 @@
 import Link from 'next/link';
 import { Suspense } from 'react';
+import { connection } from 'next/server';
 import { Icon } from '@/components/icons';
 import { SearchForm } from '@/components/search-form';
 import { HotelCard } from '@/components/hotel-card';
-import { featuredHotels, getVirtualToday, listCities, resolveStay } from '@/lib/data';
-import { addDaysIso } from '@/lib/format';
+import { featuredHotels, listCities, resolveStay } from '@/lib/data';
+import { addDaysIso, todayIso } from '@/lib/format';
 
 export const metadata = {
   title: 'Nightingale CRS · Book a stay across the franchise',
 };
 
 async function HeroSearch() {
-  const [cities, today] = await Promise.all([listCities(), getVirtualToday()]);
-  const checkIn = addDaysIso(today, 1);
-  return (
+  await connection();
+  const [cities, today] = await Promise.all([listCities(), Promise.resolve(todayIso())]);
+  const checkIn = addDaysIso(today, 1);  return (
     <SearchForm
       cities={cities}
       defaults={{ checkIn, checkOut: addDaysIso(checkIn, 2), guests: 2 }}
@@ -170,8 +171,8 @@ export default function HomePage() {
             <span className="badge-slate w-fit">For admins</span>
             <h3 className="mt-4 text-lg font-semibold">Run the whole franchise</h3>
             <p className="muted mt-2 flex-1">
-              Catalog, overbooking buffers, amenities, reports, the virtual clock, and a synthetic
-              traffic simulator — all in one control plane.
+              Catalog, overbooking controls, structured amenities, a daily inventory chart, and
+              cross-database reports — all in one control plane.
             </p>
             <Link href="/admin" className="btn-secondary mt-5 w-fit">Open admin</Link>
           </article>

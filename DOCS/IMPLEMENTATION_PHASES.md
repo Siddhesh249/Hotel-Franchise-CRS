@@ -1,103 +1,102 @@
 # Implementation Phases
 
-Two phases only, split by dependency: everything in Phase 2 depends on something
-built in Phase 1 being functional first. Phase 1 is intentionally the larger phase
-— it contains every foundational component plus the full guest-facing booking flow,
-since nothing else in the system can be demonstrated without that working end to
-end. See `ARCHITECTURE.md` for the design of every component named below, and
-`FUNCTIONAL_REQUIREMENTS.odt` for the requirement each component satisfies.
+Two phases, split by dependency. Phase 1 is the foundation plus the full
+guest-facing booking flow. Phase 2 is the admin control plane, reporting, and
+demo polish. See `ARCHITECTURE.md` for component design and
+`DOCS/DEMO_GUIDE.md` for the presentation run sheet.
 
 ---
 
 ## Phase 1 — Foundation + guest-facing core
 
-Goal at the end of this phase: a person can register, search, book a room (and see
-all three possible outcomes — Confirmed, Confirmed-overbooked, Waitlisted), cancel
-a booking and watch the waitlist promote, pay for it, and log out — and a staff
-member can log in, see their hotel's bookings, and assign a physical room. Nothing
-in this phase depends on anything outside Phase 1.
+Goal: a person can register, search, book (and see all three outcomes —
+Confirmed, Confirmed-overbooked, Waitlisted), pay, cancel, and watch the waitlist
+promote; a staff member can log in, see their hotel’s bookings, and assign a
+physical room after payment.
 
-### 1.1 Schema and data-layer additions (no dependents — build first)
-- Add `staff_account` table.
-- Add `password_hash`, `is_synthetic` columns to `guest`.
-- Add `sim_clock` table and `evt_clock_tick` event (built now because the API
-  layer's date-handling in 1.4 reads from it from the start, even though the admin
-  UI to control it is Phase 2).
-- Stand up MongoDB, create the `hotel_features` collection and its unique index on
-  `hotel_id`, seed one document per existing hotel.
-- *Existing* MariaDB DDL/DML (`hotel_crs_ddl.sql`, `hotel_crs_dml.sql`) run as-is —
-  no changes to the overbooking engine itself.
+### 1.1 Schema and data-layer additions
+- Add `staff_account` table and `guest.password_hash`.
+- Add `booking.special_requests`.
+- Stand up MongoDB, create the `hotel_features` collection and its unique index
+  on `hotel_id`, seed one document per existing hotel.
+- Run the MariaDB DDL/DML as the base. The overbooking engine keeps its
+  lock-and-decide structure but gains validation, refund audit, room release on
+  cancellation, and the adaptive per-night buffer described in Phase 2.
+- Use real calendar dates (`CURRENT_DATE`) — no virtual clock or event scheduler.
 
-### 1.2 Auth & route protection (depends on 1.1's `staff_account`/`guest` columns)
+### 1.2 Auth & route protection
 - Auth.js credentials provider against `guest` and `staff_account`.
 - JWT session shape (`actorType`, `role`, `hotelId`).
-- `requireRole` / `requireOwnership` middleware used by every route from here on.
-- Registration and login pages/routes.
+- `requireRole` / `requireOwnership` helpers used by every protected route.
+- Registration and login pages/routes, with role-based redirects and callback
+  support.
 
-### 1.3 Public site (depends on 1.1's Mongo seed data)
-- Landing page.
-- Hotel listing + detail pages, merging the SQL hotel/room_type rows with the Mongo
+### 1.3 Public site
+- Landing page with availability search.
+- Hotel listing + detail, merging SQL hotel/room_type rows with the Mongo
   `hotel_features` document.
+- Live availability for every night of the stay.
 
-### 1.4 Guest booking flow (depends on 1.2 auth, 1.1 clock for date defaults)
+### 1.4 Guest booking flow
 - Availability search (wraps `fn_available_rooms`).
-- Booking creation (wraps `sp_create_booking`) — UI must surface all three outcome
-  states distinctly, not just "success/fail".
-- "My bookings" page.
-- Cancellation (wraps `sp_cancel_booking`) — UI should reflect a waitlisted booking
-  flipping to Confirmed after a cancellation frees capacity.
-- Simulated payment form (inserts a `payment` row).
+- Booking creation (wraps `sp_create_booking`) — UI surfaces all three outcomes
+  distinctly.
+- “My bookings” page with payment, cancellation, refunds, and waitlist status.
+- Simulated payment form (inserts a `payment` row; amount is server-side).
 
-### 1.5 Staff portal (depends on 1.2 auth, 1.4 for there to be bookings to show)
-- Hotel-scoped bookings/arrivals view (filtered by `session.hotelId`).
-- Room assignment action (wraps the `room_assignment` insert), with the
-  `SQLSTATE '45000'` trigger conflict caught and shown as a clean error, not a raw
-  SQL message.
+### 1.5 Staff portal
+- Hotel-scoped bookings/arrivals view (`session.hotelId`).
+- Payment gate: room assignment requires a completed payment.
+- Room dropdown showing only assignable rooms for the stay.
+- `SQLSTATE '45000'` trigger conflict caught and shown as a clean error.
 
-### 1.6 Core error handling and env config (cuts across all of the above)
+### 1.6 Core error handling and env config
 - Standard `{ error: { code, message } }` API error shape.
 - `.env.local` wiring for both databases and `AUTH_SECRET`/`NEXTAUTH_URL`.
 
-**Phase 1 exit criteria:** a guest can complete a full booking → cancellation →
-waitlist-promotion cycle through the UI, a staff member can assign a room and hit
-the double-assignment guard, and both are enforced by real auth — all without
-needing the admin portal, the clock controls, or the simulation engine to exist yet.
+**Phase 1 exit criteria:** a guest can complete booking → payment → cancellation
+→ waitlist promotion through the UI; a staff member can assign a room only after
+payment and hit the double-assignment guard; both are enforced by real auth.
 
 ---
 
-## Phase 2 — Admin control plane + simulation + reporting
+## Phase 2 — Admin control plane + reporting + demo
 
-Goal at the end of this phase: an admin can manage the catalog, tune the
-overbooking policy, edit amenities, run reports across both databases, and run a
-live, controllable simulation for a demo. Everything here depends on Phase 1 being
-in place (auth, the booking flow, and the clock table already existing).
+Goal: an admin can manage the catalog, control overbooking, edit amenities
+without JSON, see daily capacity vs overbooking, and run reports across both
+databases.
 
-### 2.1 Admin catalog management (depends on 1.2 auth, 1.1 schema)
+### 2.1 Admin catalog management
 - Hotel / room type CRUD.
-- Overbooking policy editor (`overbooking_policy.overbook_percentage`).
-- Amenities editor for the `hotel_features` Mongo document.
+- Physical room creation for new or under-provisioned room types.
+- Overbooking control (`overbooking_policy.overbook_percentage`) with effective
+  **base** buffer math shown in the UI, plus the adaptive daily buffer
+  (`fn_dynamic_buffer_rooms()`) that reacts to the previous night’s occupancy.
 
-### 2.2 Reporting (depends on 1.1 Mongo seed data + 1.4 having produced real bookings)
-- SQL report: currently-overbooked confirmed bookings (the query already present in
-  `hotel_crs_dml.sql`).
-- Mongo aggregation report: amenity counts grouped by city (the required NoSQL
-  advanced-feature deliverable).
+### 2.2 Amenities editor
+- Structured editor for general/wellness chips, policies, and room-type features.
+- Stored as one flexible MongoDB document per hotel.
+- No JSON editing required for normal use.
 
-### 2.3 Virtual clock admin UI (depends on 1.1's `sim_clock`/event already existing)
-- Pause / resume / fast-forward / tick-rate controls, reading and writing
-  `sim_clock` and toggling the event via `ALTER EVENT ... ENABLE/DISABLE`.
+### 2.3 Reporting and inventory chart
+- SQL report: currently-overbooked confirmed bookings.
+- Mongo aggregation report: amenity counts grouped by city.
+- Daily inventory chart: physical rooms (constant), adaptive max sellable
+  (capacity + per-night buffer), and booked rooms for the next 14/30/60 real
+  days. The database materialises the series in `daily_inventory_plan` and
+  refreshes it on every chart request.
+- Additive migration (`SQL/hotel_crs_adaptive_inventory.sql`) so an existing
+  database gets the adaptive plan, the extra properties, and the patterned
+  demand seed without dropping user data.
 
-### 2.4 Simulation engine (depends on 2.3's clock controls, 1.4's booking flow, 1.1's `is_synthetic` flag)
-- Singleton in-process service with start/stop/configure/spawn-one controls.
-- Client archetype configuration (admin-editable, not hardcoded).
-- Spawn logic calling `sp_create_booking` / `sp_cancel_booking` exactly as the real
-  guest flow does, tagging created guests `is_synthetic = TRUE`.
-- "Clear simulation data" action for resetting before a live demo.
+### 2.4 Demo readiness
+- Seed data with dates relative to the day it is loaded.
+- `run.sh` one-command setup/start/open-browser script.
+- `DOCS/DEMO_GUIDE.md` with the full overbooking walkthrough, SQL evidence, and
+  test checklist.
 
-### 2.5 Polish
-- UI pass across all three portals.
-- End-to-end run-through matching the functional requirements document.
-
-**Phase 2 exit criteria:** the whole system — including a self-running,
-admin-controllable demo via the simulation engine — works without manual database
-intervention.
+**Phase 2 exit criteria:** the whole system works from a clean `./run.sh
+--reset`, the overbooking/waitlist cycle is demonstrable from the UI and SQL, and
+the admin can explain capacity vs allowed overbooking from the inventory chart —
+including why the max-sellable ceiling moves after an under- or over-booked
+night.
