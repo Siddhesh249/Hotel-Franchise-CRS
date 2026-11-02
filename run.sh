@@ -328,4 +328,10 @@ printf '  Admin:  admin@example.com / Demo@1234\n\n'
 printf 'Dev log: %s\n' "$LOG_FILE"
 printf 'Press Ctrl+C to stop the server.\n\n'
 
-wait "$DEV_PID"
+# `setsid --fork` detaches the dev server from this shell, so it is not our
+# child and `wait` would fail with "not a child of this shell". Poll instead:
+# this keeps run.sh in the foreground until the server exits or the user hits
+# Ctrl+C (which the trap above turns into a process-group cleanup).
+while kill -0 "$DEV_PID" >/dev/null 2>&1; do
+  sleep 1
+done
