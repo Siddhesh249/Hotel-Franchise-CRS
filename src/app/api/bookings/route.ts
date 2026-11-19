@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import pool from '@/lib/db';
 import { currentUser, parseDate, positiveInt } from '@/lib/request';
 import { apiError, requireRole } from '@/lib/authz';
+import { retryOnError } from '@/lib/retry';
 
 const OUTCOMES = ['CONFIRMED', 'CONFIRMED_OVERBOOKED', 'WAITLISTED'];
 
@@ -31,13 +32,16 @@ export async function POST(req: NextRequest) {
 
   const conn = await pool.getConnection();
   try {
-    await conn.query('CALL sp_create_booking(?, ?, ?, ?, ?, ?, @booking_id, @status)', [
-      Number(session!.sub), roomTypeId, checkIn, checkOut, numGuests, requests || null,
-    ]);
-    const [[result]] = await conn.query<any[]>(
-      'SELECT @booking_id AS booking_id, @status AS status, (SELECT total_amount FROM booking WHERE booking_id = @booking_id) AS total_amount',
-    );
-    const status = String(result.status);
+    const result = await retryOnError(async () => {
+      await conn.query('CALL sp_create_booking(?, ?, ?, ?, ?, ?, @booking_id, @status)', [
+        Number(session!.sub), roomTypeId, checkIn, checkOut, numGuests, requests || null,
+      ]);
+      const [[row]] = await conn.query<any[]>(
+        'SELECT @booking_id AS booking_id, @status AS status, (SELECT total_amount FROM booking WHERE booking_id = @booking_id) AS total_amount',
+      );
+      return { ...row, status: String(row.status) };
+    });
+    const status = result.status;
 
     switch (status) {
       case 'INVALID_DATES':

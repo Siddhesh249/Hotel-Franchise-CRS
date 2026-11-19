@@ -588,7 +588,11 @@ BEGIN
         IF v_done = 1 THEN
             LEAVE promote_loop;
         END IF;
-        CALL sp_try_promote_waitlist(v_booking_id);
+        -- A failure on one booking (e.g. a lock timeout) must not stop the guests behind it.
+        BEGIN
+            DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+            CALL sp_try_promote_waitlist(v_booking_id);
+        END;
     END LOOP;
     CLOSE waitlist_cursor;
 END$$
@@ -797,9 +801,14 @@ this_proc: BEGIN
     COMMIT;
     SET p_status = 'CANCELLED';
 
-    -- Capacity just freed up: let waiting guests in, oldest first.
+    -- Capacity just freed up: let waiting guests in, oldest first. The
+    -- cancellation is already committed, so a problem here must not turn it
+    -- into an error; anyone left waiting is retried on the next cancellation.
     IF v_status = 'Confirmed' THEN
-        CALL sp_promote_waitlist(v_room_type_id);
+        BEGIN
+            DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+            CALL sp_promote_waitlist(v_room_type_id);
+        END;
     END IF;
 END$$
 

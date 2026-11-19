@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import pool from '@/lib/db';
 import { currentUser, positiveInt } from '@/lib/request';
 import { apiError, requireRole } from '@/lib/authz';
+import { retryOnError } from '@/lib/retry';
 
 const REFUSALS: Record<string, [string, string, number]> = {
   NOT_FOUND: ['NOT_FOUND', 'Booking not found', 404],
@@ -30,9 +31,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const conn = await pool.getConnection();
   try {
-    await conn.query('CALL sp_cancel_booking(?, ?, ?, @status)', [bookingId, Number(session!.sub), reason]);
-    const [[result]] = await conn.query<any[]>('SELECT @status AS status');
-    const status = String(result.status);
+    const { status } = await retryOnError(async () => {
+      await conn.query('CALL sp_cancel_booking(?, ?, ?, @status)', [bookingId, Number(session!.sub), reason]);
+      const [[row]] = await conn.query<any[]>('SELECT @status AS status');
+      return { status: String(row.status) };
+    });
     if (status === 'CANCELLED') {
       return NextResponse.json({ cancelled: true, booking_id: bookingId });
     }

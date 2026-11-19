@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import pool from '@/lib/db';
 import { currentUser, positiveInt } from '@/lib/request';
 import { apiError, requireRole } from '@/lib/authz';
+import { retryOnError } from '@/lib/retry';
 
 const METHODS = ['Card', 'UPI', 'NetBanking', 'Cash'];
 
@@ -33,11 +34,14 @@ export async function POST(req: NextRequest) {
 
   const conn = await pool.getConnection();
   try {
-    await conn.query('CALL sp_record_payment(?, ?, ?, @status, @payment_id, @amount)', [
-      bookingId, Number(session!.sub), method,
-    ]);
-    const [[result]] = await conn.query<any[]>('SELECT @status AS status, @payment_id AS payment_id, @amount AS amount');
-    const status = String(result.status);
+    const result = await retryOnError(async () => {
+      await conn.query('CALL sp_record_payment(?, ?, ?, @status, @payment_id, @amount)', [
+        bookingId, Number(session!.sub), method,
+      ]);
+      const [[row]] = await conn.query<any[]>('SELECT @status AS status, @payment_id AS payment_id, @amount AS amount');
+      return { ...row, status: String(row.status) };
+    });
+    const status = result.status;
     if (status === 'PAID') {
       return NextResponse.json(
         { payment_id: Number(result.payment_id), amount: Number(result.amount) },
