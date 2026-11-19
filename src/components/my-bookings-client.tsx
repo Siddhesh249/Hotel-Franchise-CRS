@@ -6,6 +6,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { BookingBadge, PaymentBadge } from '@/components/status-badge';
 import { Empty, Feedback, PageHeader, Tabs } from '@/components/ui';
 import { formatCurrency, formatDate, plural } from '@/lib/format';
+import { useAutoRefresh } from '@/lib/use-auto-refresh';
 import type { BookingRow } from '@/types';
 
 type Filter = 'upcoming' | 'waitlist' | 'past';
@@ -30,7 +31,7 @@ export function MyBookingsClient({ guestName }: { guestName: string }) {
   const [method, setMethod] = useState('Card');
   const [busyId, setBusyId] = useState<number | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (background = false) => {
     try {
       const response = await fetch('/api/bookings/mine', { cache: 'no-store' });
       if (response.status === 401) {
@@ -38,10 +39,11 @@ export function MyBookingsClient({ guestName }: { guestName: string }) {
         return;
       }
       const data = await response.json().catch(() => null);
-      if (!response.ok) setError(data?.error?.message ?? 'Unable to load your bookings.');
-      else setBookings(data);
+      if (!response.ok) {
+        if (!background) setError(data?.error?.message ?? 'Unable to load your bookings.');
+      } else setBookings(data);
     } catch {
-      setError('Could not reach the server.');
+      if (!background) setError('Could not reach the server.');
     } finally {
       setLoading(false);
     }
@@ -51,6 +53,8 @@ export function MyBookingsClient({ guestName }: { guestName: string }) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
+
+  useAutoRefresh(() => void load(true), 10000);
 
   const counts = useMemo(() => ({
     upcoming: bookings.filter((b) => inFilter(b, 'upcoming')).length,

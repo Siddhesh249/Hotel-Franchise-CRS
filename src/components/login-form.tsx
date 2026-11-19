@@ -10,8 +10,10 @@ import { roleHome } from '@/lib/routes';
 const DEMO_PASSWORD = 'Demo@1234';
 const demoAccounts = [
   { label: 'Guest', email: 'arjun.mehta@example.com' },
-  { label: 'Staff', email: 'staff.koramangala@example.com' },
   { label: 'Admin', email: 'admin@example.com' },
+  { label: 'Staff · Koramangala', email: 'staff.koramangala@example.com' },
+  { label: 'Staff · Andheri', email: 'staff.andheri@example.com' },
+  { label: 'Staff · BKC', email: 'staff.bkc@example.com' },
 ];
 
 export function LoginForm({ callbackUrl, registered }: { callbackUrl: string | null; registered: boolean }) {
@@ -64,9 +66,9 @@ export function LoginForm({ callbackUrl, registered }: { callbackUrl: string | n
       <div className="card p-4">
         <p className="eyebrow">Demo accounts</p>
         <p className="muted mt-1">
-          Password for all: <code className="rounded bg-ink-100 px-1 font-mono text-xs">{DEMO_PASSWORD}</code>
+          Staff only see their own hotel&apos;s bookings. Password for all: <code className="rounded bg-ink-100 px-1 font-mono text-xs">{DEMO_PASSWORD}</code>
         </p>
-        <div className="mt-3 grid grid-cols-3 gap-2">
+        <div className="mt-3 grid grid-cols-2 gap-2">
           {demoAccounts.map((account) => (
             <button
               key={account.label}

@@ -1,10 +1,11 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BookingBadge, PaymentBadge } from '@/components/status-badge';
 import { Empty, Feedback, PageHeader, Tabs } from '@/components/ui';
 import { formatDate, plural } from '@/lib/format';
+import { useAutoRefresh } from '@/lib/use-auto-refresh';
 import type { BookingRow } from '@/types';
 
 interface StaffPayload {
@@ -21,7 +22,7 @@ interface RoomOption {
   occupied: boolean;
 }
 
-type Filter = 'arrivals' | 'inhouse' | 'upcoming' | 'waitlist' | 'history';
+type Filter = 'active' | 'arrivals' | 'inhouse' | 'upcoming' | 'waitlist' | 'history';
 const PAGE = 15;
 
 export function StaffDashboard({ staffName, isAdmin }: { staffName: string; isAdmin: boolean }) {
@@ -30,7 +31,7 @@ export function StaffDashboard({ staffName, isAdmin }: { staffName: string; isAd
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [filter, setFilter] = useState<Filter>('arrivals');
+  const [filter, setFilter] = useState<Filter>('active');
   const [search, setSearch] = useState('');
   const [limit, setLimit] = useState(PAGE);
   const [assigningId, setAssigningId] = useState<number | null>(null);
@@ -39,6 +40,7 @@ export function StaffDashboard({ staffName, isAdmin }: { staffName: string; isAd
   const [saving, setSaving] = useState(false);
   const [hotels, setHotels] = useState<Array<{ hotel_id: number; hotel_name: string }>>([]);
   const [hotelId, setHotelId] = useState('');
+  const knownIds = useRef<Set<number> | null>(null);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -52,7 +54,7 @@ export function StaffDashboard({ staffName, isAdmin }: { staffName: string; isAd
       .catch(() => setError('Unable to load the hotel list.'));
   }, [isAdmin]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (background = false) => {
     if (isAdmin && !hotelId) return;
     try {
       const response = await fetch(isAdmin ? `/api/staff/bookings?hotel_id=${hotelId}` : '/api/staff/bookings', { cache: 'no-store' });
@@ -61,13 +63,24 @@ export function StaffDashboard({ staffName, isAdmin }: { staffName: string; isAd
         return;
       }
       const payload = await response.json().catch(() => null);
-      if (!response.ok) setError(payload?.error?.message ?? 'Unable to load bookings.');
-      else {
-        setError('');
-        setData(payload);
+      if (!response.ok) {
+        if (!background) setError(payload?.error?.message ?? 'Unable to load bookings.');
+        return;
       }
+      setError('');
+      const incoming = payload.bookings as BookingRow[];
+      if (knownIds.current) {
+        const fresh = incoming.filter((b) => !knownIds.current!.has(b.booking_id));
+        if (fresh.length) {
+          setNotice(`New booking${fresh.length > 1 ? 's' : ''}: ${fresh
+            .map((b) => `#${b.booking_id} ${b.first_name} ${b.last_name}, ${b.type_name}, ${formatDate(b.check_in_date)}`)
+            .join('; ')}`);
+        }
+      }
+      knownIds.current = new Set(incoming.map((b) => b.booking_id));
+      setData(payload);
     } catch {
-      setError('Could not reach the server.');
+      if (!background) setError('Could not reach the server.');
     } finally {
       setLoading(false);
     }
@@ -78,6 +91,8 @@ export function StaffDashboard({ staffName, isAdmin }: { staffName: string; isAd
     void load();
   }, [load]);
 
+  useAutoRefresh(() => void load(true), 8000);
+
   const today = data?.today ?? '';
   const lists = useMemo(() => {
     const all = data?.bookings ?? [];
@@ -86,8 +101,9 @@ export function StaffDashboard({ staffName, isAdmin }: { staffName: string; isAd
     const inhouse = confirmed.filter((b) => b.check_in_date < today);
     const upcoming = confirmed.filter((b) => b.check_in_date > today);
     const waitlist = all.filter((b) => b.booking_status === 'Waitlisted' && b.cancellable);
-    const open = new Set([...confirmed, ...waitlist].map((b) => b.booking_id));
-    return { arrivals, inhouse, upcoming, waitlist, history: all.filter((b) => !open.has(b.booking_id)).reverse() };
+    const active = [...confirmed, ...waitlist].sort((a, b) => a.check_in_date.localeCompare(b.check_in_date) || a.booking_id - b.booking_id);
+    const open = new Set(active.map((b) => b.booking_id));
+    return { active, arrivals, inhouse, upcoming, waitlist, history: all.filter((b) => !open.has(b.booking_id)).reverse() };
   }, [data, today]);
 
   const visible = useMemo(() => {
@@ -150,7 +166,7 @@ export function StaffDashboard({ staffName, isAdmin }: { staffName: string; isAd
         actions={
           <>
             {isAdmin && (
-              <select aria-label="Hotel" value={hotelId} onChange={(e) => { setHotelId(e.target.value); setData(null); setLoading(true); }} className="input w-64">
+              <select aria-label="Hotel" value={hotelId} onChange={(e) => { knownIds.current = null; setHotelId(e.target.value); setData(null); setLoading(true); }} className="input w-64">
                 {hotels.map((hotel) => <option key={hotel.hotel_id} value={hotel.hotel_id}>{hotel.hotel_name}</option>)}
               </select>
             )}
@@ -166,6 +182,7 @@ export function StaffDashboard({ staffName, isAdmin }: { staffName: string; isAd
           value={filter}
           onChange={(id) => { setFilter(id); setLimit(PAGE); setAssigningId(null); }}
           tabs={[
+            { id: 'active', label: 'All active', count: lists.active.length },
             { id: 'arrivals', label: 'Arriving today', count: lists.arrivals.length },
             { id: 'inhouse', label: 'In house', count: lists.inhouse.length },
             { id: 'upcoming', label: 'Upcoming', count: lists.upcoming.length },
@@ -199,7 +216,7 @@ export function StaffDashboard({ staffName, isAdmin }: { staffName: string; isAd
                         <td>{booking.type_name}<p className="text-xs text-ink-500">{plural(booking.num_guests, 'guest')}</p></td>
                         <td className="whitespace-nowrap">
                           {formatDate(booking.check_in_date)} to {formatDate(booking.check_out_date)}
-                          <p className="text-xs text-ink-500">{plural(booking.nights, 'night')}</p>
+                          <p className="text-xs text-ink-500">{plural(booking.nights, 'night')} · booked {formatDate(booking.booking_date, { year: false })}</p>
                         </td>
                         <td>
                           <div className="flex flex-wrap items-center gap-1.5"><BookingBadge booking={booking} /><PaymentBadge booking={booking} /></div>
