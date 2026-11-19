@@ -294,6 +294,10 @@ SELECT
         WHEN b.check_in_date  >  CURRENT_DATE THEN 'Upcoming'
         ELSE 'Current'
     END AS stay_phase,
+    -- not cancelled and the stay has not ended yet
+    (b.booking_status <> 'Cancelled' AND b.check_out_date > CURRENT_DATE) AS is_open,
+    -- same rule sp_cancel_booking applies
+    (b.booking_status <> 'Cancelled' AND b.check_in_date >= CURRENT_DATE) AS cancellable,
     g.first_name, g.last_name, g.email, g.phone,
     rt.type_name, rt.hotel_id, h.hotel_name, h.city, h.state,
     p.payment_id, p.payment_status, p.payment_method, p.amount AS paid_amount,

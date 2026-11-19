@@ -135,7 +135,7 @@ INSERT INTO room_assignment (booking_id, room_id) VALUES (@b_t3, 3);       -- ro
 --   booking  6    : CONFIRMED_OVERBOOKED (uses the buffer)
 --   booking  7    : WAITLISTED
 -- Then booking 2 is cancelled (and refunded) and the waitlisted guest is
--- promoted automatically.
+-- promoted automatically. An 8th guest then joins the (now empty) waitlist.
 -- ============================================================================
 SET @w_in  = DATE_ADD(@today, INTERVAL 10 DAY);
 SET @w_out = DATE_ADD(@today, INTERVAL 12 DAY);
@@ -154,6 +154,10 @@ CALL sp_record_payment(@w3, 3, 'Card', @p_st, @p_id, @p_amt);
 INSERT INTO room_assignment (booking_id, room_id) VALUES (@w1, 1), (@w3, 2);
 
 CALL sp_cancel_booking(@w2, 2, 'Change of travel plans', @cancel_st);
+
+-- The freed slot went to booking 7. The next guest to ask for these nights has
+-- nowhere to go, so this one stays on the waitlist for the demo.
+CALL sp_create_booking(8, 1, @w_in, @w_out, 1, 'Flexible on dates', @w8, @ws8);
 
 -- ----------------------------------------------------------------------------
 -- A few more bookings elsewhere in the franchise

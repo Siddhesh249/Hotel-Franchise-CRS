@@ -79,7 +79,7 @@ export function AdminInventoryChart({ hotels }: { hotels: Array<{ hotel_id: numb
             <div className="overflow-x-auto">
               <div className="flex h-56 min-w-[640px] items-end gap-1.5 border-b border-ink-200">
                 {data.map((day) => (
-                  <div key={day.date} className="flex flex-1 items-end justify-center gap-0.5" title={formatDate(day.date)}>
+                  <div key={day.date} className="flex h-full flex-1 items-end justify-center gap-0.5" title={formatDate(day.date)}>
                     {SERIES.map((item) => (
                       <div
                         key={item.key}
@@ -99,7 +99,7 @@ export function AdminInventoryChart({ hotels }: { hotels: Array<{ hotel_id: numb
 
           <div className="table-shell">
             <table>
-              <thead><tr><th>Date</th><th>Physical</th><th>Base buffer</th><th>Buffer today</th><th>Max sellable</th><th>Booked</th></tr></thead>
+              <thead><tr><th>Date</th><th>Physical</th><th>Base buffer</th><th>Buffer</th><th>Max sellable</th><th>Booked</th></tr></thead>
               <tbody>
                 {data.map((day) => {
                   const delta = day.buffer_rooms - day.base_buffer_rooms;

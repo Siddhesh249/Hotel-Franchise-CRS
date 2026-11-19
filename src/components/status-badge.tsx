@@ -21,7 +21,7 @@ export function bookingLabel(booking: Pick<BookingRow, 'booking_status' | 'stay_
       : { label: 'Waitlist expired', tone: 'slate' };
   }
   if (booking.stay_phase === 'Past') return { label: 'Completed', tone: 'slate' };
-  if (booking.stay_phase === 'Current') return { label: 'In stay', tone: 'brand' };
+  if (booking.stay_phase === 'Current') return { label: 'Current', tone: 'brand' };
   return { label: 'Confirmed', tone: 'brand' };
 }
 
