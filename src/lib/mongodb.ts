@@ -1,39 +1,30 @@
 /**
- * MongoDB client (singleton pattern for Next.js hot-reload safety).
- *
- * The client is created lazily so a missing MONGODB_URI only affects the
- * features that actually need Mongo — the SQL-only parts of the app keep
- * working, and we never create an unhandled rejected promise at import time.
+ * MongoDB client, created lazily so a missing or stopped MongoDB only affects
+ * the features that need it. The promise is cached on `globalThis` so hot
+ * reloads in development do not open a new connection every time.
  */
 
 import { MongoClient } from 'mongodb';
 
-const uri = process.env.MONGODB_URI;
-
-let client: MongoClient | undefined;
-let clientPromise: Promise<MongoClient> | undefined;
-
 declare global {
-  // Allow reuse across hot-reloads in dev
   var _mongoClientPromise: Promise<MongoClient> | undefined;
 }
 
 export function getMongoClient(): Promise<MongoClient> {
+  const uri = process.env.MONGODB_URI;
   if (!uri) return Promise.reject(new Error('Missing environment variable: MONGODB_URI'));
-  if (process.env.NODE_ENV === 'development') {
-    if (!global._mongoClientPromise) {
-      client = new MongoClient(uri, { serverSelectionTimeoutMS: 3000 });
-      global._mongoClientPromise = client.connect();
-    }
-    return global._mongoClientPromise;
+  if (!globalThis._mongoClientPromise) {
+    globalThis._mongoClientPromise = new MongoClient(uri, { serverSelectionTimeoutMS: 3000 })
+      .connect()
+      .catch((error) => {
+        globalThis._mongoClientPromise = undefined;
+        throw error;
+      });
   }
-  if (!clientPromise) {
-    client = new MongoClient(uri, { serverSelectionTimeoutMS: 3000 });
-    clientPromise = client.connect();
-  }
-  return clientPromise;
+  return globalThis._mongoClientPromise;
 }
 
-export function mongoDbName(): string {
-  return process.env.MONGODB_DB ?? 'hotel_crs';
+export async function featuresCollection() {
+  const client = await getMongoClient();
+  return client.db(process.env.MONGODB_DB ?? 'hotel_crs').collection('hotel_features');
 }

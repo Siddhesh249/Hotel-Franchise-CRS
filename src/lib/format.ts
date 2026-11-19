@@ -12,21 +12,12 @@ function parseCalendarDate(value: string): Date | null {
 }
 
 export function formatDate(value: string | null | undefined, options?: { weekday?: boolean; year?: boolean }): string {
-  if (!value) return '—';
+  if (!value) return '-';
   const date = parseCalendarDate(value);
   if (!date) return String(value);
   const weekday = options?.weekday ? `${WEEKDAYS[date.getUTCDay()]}, ` : '';
   const year = options?.year === false ? '' : ` ${date.getUTCFullYear()}`;
   return `${weekday}${date.getUTCDate()} ${MONTHS[date.getUTCMonth()]}${year}`;
-}
-
-export function formatDateTime(value: string | null | undefined): string {
-  if (!value) return '—';
-  // SQL DATETIME strings are server-local; parse them as local time.
-  const normalized = value.includes('T') ? value : value.replace(' ', 'T');
-  const date = new Date(normalized);
-  if (Number.isNaN(date.valueOf())) return formatDate(value);
-  return `${formatDate(value)} · ${date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`;
 }
 
 export function formatCurrency(value: string | number | null | undefined): string {
@@ -47,7 +38,7 @@ export function nightsBetween(checkIn: string, checkOut: string): number {
   return Math.max(0, Math.round((end.valueOf() - start.valueOf()) / 86_400_000));
 }
 
-/** Today as YYYY-MM-DD in the browser's local calendar. */
+/** Today as YYYY-MM-DD in the local calendar of whoever is running the code. */
 export function todayIso(): string {
   const now = new Date();
   const local = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
@@ -61,20 +52,6 @@ export function addDaysIso(value: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-export function humanize(value: string | null | undefined): string {
-  if (!value) return '—';
-  return value
-    .replace(/_/g, ' ')
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-export function initials(name: string | null | undefined): string {
-  if (!name) return '?';
-  return name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? '')
-    .join('');
+export function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : pluralForm}`;
 }

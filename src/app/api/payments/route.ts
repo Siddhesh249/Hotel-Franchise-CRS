@@ -1,21 +1,23 @@
 /**
- * POST /api/payments
- *
- * Guest only (own booking). Inserts a simulated payment row.
- *
- * The amount is ALWAYS taken from booking.total_amount on the server — a client
- * cannot pay ₹1 for a ₹7,000 stay. Payment status is 'Completed' because this
- * is a simulated gateway (ARCHITECTURE.md §8).
- *
+ * POST /api/payments   (Guest, own booking)
  * Body: { booking_id, payment_method }
+ *
+ * Simulated gateway. sp_record_payment takes the amount from the booking, so a
+ * client can never pay a different amount, and it refuses a second payment.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import pool from '@/lib/db';
-import { currentUser, parsePositiveInt } from '@/lib/request';
-import { apiError, requireOwnership, requireRole } from '@/lib/authz';
+import { currentUser, positiveInt } from '@/lib/request';
+import { apiError, requireRole } from '@/lib/authz';
 
-const METHODS = ['Card', 'Cash', 'UPI', 'NetBanking'];
+const METHODS = ['Card', 'UPI', 'NetBanking', 'Cash'];
+
+const REFUSALS: Record<string, [string, string, number]> = {
+  NOT_FOUND: ['NOT_FOUND', 'Booking not found', 404],
+  NOT_PAYABLE: ['NOT_PAYABLE', 'Only a confirmed booking that has not ended can be paid', 409],
+  ALREADY_PAID: ['ALREADY_PAID', 'This booking has already been paid', 409],
+};
 
 export async function POST(req: NextRequest) {
   const session = await currentUser();
@@ -23,42 +25,33 @@ export async function POST(req: NextRequest) {
   if (denied) return denied;
 
   const body = await req.json().catch(() => null);
-  const bookingId = parsePositiveInt(body?.booking_id);
+  const bookingId = positiveInt(body?.booking_id);
   const method = String(body?.payment_method ?? '');
   if (!bookingId || !METHODS.includes(method)) {
     return apiError('VALIDATION_ERROR', 'A valid booking and payment method are required', 400);
   }
 
+  const conn = await pool.getConnection();
   try {
-    const [rows] = await pool.execute<any[]>(
-      `SELECT b.guest_id, b.booking_status, b.total_amount,
-              (SELECT COUNT(*) FROM payment p WHERE p.booking_id = b.booking_id AND p.payment_status = 'Completed') AS paid_count
-         FROM booking b WHERE b.booking_id = ?`,
-      [bookingId],
-    );
-    if (!rows.length) return apiError('NOT_FOUND', 'Booking not found', 404);
-
-    const booking = rows[0];
-    const owned = requireOwnership(session, Number(booking.guest_id));
-    if (owned) return owned;
-
-    if (!['Confirmed', 'CheckedIn'].includes(String(booking.booking_status))) {
-      return apiError('NOT_PAYABLE', 'Only a confirmed booking can be paid', 409);
+    await conn.query('CALL sp_record_payment(?, ?, ?, @status, @payment_id, @amount)', [
+      bookingId, Number(session!.sub), method,
+    ]);
+    const [[result]] = await conn.query<any[]>('SELECT @status AS status, @payment_id AS payment_id, @amount AS amount');
+    const status = String(result.status);
+    if (status === 'PAID') {
+      return NextResponse.json(
+        { payment_id: Number(result.payment_id), amount: Number(result.amount) },
+        { status: 201 },
+      );
     }
-    if (Number(booking.paid_count) > 0) {
-      return apiError('ALREADY_PAID', 'This booking has already been paid', 409);
-    }
-
-    const amount = Number(booking.total_amount ?? 0);
-    const [result] = await pool.execute<any>(
-      "INSERT INTO payment (booking_id, amount, payment_method, payment_status) VALUES (?, ?, ?, 'Completed')",
-      [bookingId, amount, method],
-    );
-    return NextResponse.json(
-      { payment_id: result.insertId, payment_status: 'Completed', amount },
-      { status: 201 },
-    );
-  } catch {
+    const refusal = REFUSALS[status];
+    return refusal
+      ? apiError(refusal[0], refusal[1], refusal[2])
+      : apiError('DATABASE_ERROR', 'The payment could not be recorded right now', 500);
+  } catch (error) {
+    console.error('payment failed', error);
     return apiError('DATABASE_ERROR', 'The payment could not be recorded right now', 500);
+  } finally {
+    conn.release();
   }
 }

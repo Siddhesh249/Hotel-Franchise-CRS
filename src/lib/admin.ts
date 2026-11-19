@@ -1,22 +1,17 @@
-import { apiError } from '@/lib/authz';
+import { apiError, requireRole } from '@/lib/authz';
+import { currentUser } from '@/lib/request';
 
-export function positiveId(value: unknown): number | null {
-  const id = Number(value);
-  return Number.isSafeInteger(id) && id > 0 ? id : null;
-}
-
-export function boundedNumber(value: unknown, min: number, max: number): number | null {
-  const number = Number(value);
-  return Number.isFinite(number) && number >= min && number <= max ? number : null;
-}
-
+/** Resolves the session and, if it is not an Admin, the error response to return. */
 export async function adminSession() {
-  const { currentUser } = await import('@/lib/request');
-  const { requireRole } = await import('@/lib/authz');
   const session = await currentUser();
   return { session, denied: requireRole(session, ['Admin']) };
 }
 
 export function invalid(message: string) {
   return apiError('VALIDATION_ERROR', message, 400);
+}
+
+export function serverError(code: string, message: string, error: unknown) {
+  console.error(`[${code}] ${message}`, error);
+  return apiError(code, message, 500);
 }
