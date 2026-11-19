@@ -234,6 +234,30 @@ async function main() {
     check('a waitlisted guest can cancel', r.status === 200);
   });
 
+  await section('A new guest booking reaches the right front desk immediately', async () => {
+    const bkcStaff = new Client();
+    await bkcStaff.login('staff.bkc@example.com');
+    const before = (await bkcStaff.get('/api/staff/bookings')).data.bookings.length;
+    const koraBefore = (await staff.get('/api/staff/bookings')).data.bookings.length;
+    const visitor = new Client();
+    const email = `desk${Date.now()}@example.com`;
+    await visitor.post('/api/auth/register', { first_name: 'Desk', last_name: 'Check', email, password: 'longenough' });
+    await visitor.login(email, 'longenough');
+    let r = await visitor.post('/api/bookings', { room_type_id: 7, check_in_date: iso(3), check_out_date: iso(5), num_guests: 2 });
+    check('guest books a BKC Standard room', r.status === 201 && r.data.status === 'CONFIRMED', JSON.stringify(r.data));
+    const id = r.data.booking_id;
+    r = await bkcStaff.get('/api/staff/bookings');
+    const seen = r.data.bookings.find((b) => b.booking_id === id);
+    check('BKC front desk sees it right away', r.data.bookings.length === before + 1 && seen?.first_name === 'Desk' && seen.stay_phase === 'Upcoming' && seen.payment_status === null);
+    check('Koramangala front desk does not (wrong hotel)', (await staff.get('/api/staff/bookings')).data.bookings.length === koraBefore);
+    await visitor.post('/api/payments', { booking_id: id, payment_method: 'UPI' });
+    r = await bkcStaff.get('/api/staff/bookings');
+    check('payment shows on the desk too', r.data.bookings.find((b) => b.booking_id === id).payment_status === 'Completed');
+    r = await visitor.post(`/api/bookings/${id}/cancel`, {});
+    r = await bkcStaff.get('/api/staff/bookings');
+    check('cancellation shows on the desk as refunded', r.data.bookings.find((b) => b.booking_id === id).booking_status === 'Cancelled' && r.data.bookings.find((b) => b.booking_id === id).payment_status === 'Refunded');
+  });
+
   await section('Staff front desk', async () => {
     let r = await staff.get('/api/staff/bookings');
     check('staff sees only their hotel', r.status === 200 && r.data.hotel.hotel_id === 1 && r.data.bookings.every((b) => b.hotel_id === 1));

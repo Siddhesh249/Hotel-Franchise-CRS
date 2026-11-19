@@ -63,6 +63,22 @@ for i in 1 2 3; do
   expect "assignment race round $i: one winner" "$(q "SELECT COUNT(*) FROM room_assignment WHERE room_id=4")" "1"
 done
 
+echo; echo "Mixed concurrency (30 creates, then 8 cancels + 20 creates + payments at once)"
+m1="CURRENT_DATE+INTERVAL 30 DAY"; m2="CURRENT_DATE+INTERVAL 32 DAY"
+rm -rf /tmp/vdb_mix.$$; mkdir -p /tmp/vdb_mix.$$
+for i in $(seq 1 30); do q "CALL sp_create_booking($(( i % 10 + 1 )),7,$m1,$m2,2,NULL,@b,@s); SELECT @s" > /tmp/vdb_mix.$$/c$i & done; wait
+q "SELECT booking_id, guest_id FROM booking WHERE room_type_id=7 AND check_in_date=$m1 AND booking_status='Confirmed' LIMIT 8" > /tmp/vdb_mix.$$/cancel.txt
+q "SELECT booking_id, guest_id FROM booking WHERE room_type_id=7 AND check_in_date=$m1 AND booking_status='Confirmed' LIMIT 2 OFFSET 8" > /tmp/vdb_mix.$$/pay.txt
+while read -r b g; do q "CALL sp_cancel_booking($b,$g,'mix',@s); SELECT @s" > /tmp/vdb_mix.$$/x$b & done < /tmp/vdb_mix.$$/cancel.txt
+while read -r b g; do q "CALL sp_record_payment($b,$g,'Card',@s,@p,@a); SELECT @s" > /tmp/vdb_mix.$$/p$b & done < /tmp/vdb_mix.$$/pay.txt
+for i in $(seq 31 50); do q "CALL sp_create_booking($(( i % 10 + 1 )),7,$m1,$m2,2,NULL,@b,@s); SELECT @s" > /tmp/vdb_mix.$$/c$i & done; wait
+expect "no operation ended in ERROR (no deadlocks)" "$(cat /tmp/vdb_mix.$$/* | grep -c '^ERROR$')" "0"
+expect "all 8 cancels succeeded"                    "$(cat /tmp/vdb_mix.$$/x* | grep -c '^CANCELLED$')" "8"
+expect "confirmed never exceeds the sellable ceiling" "$(q "SELECT COUNT(*) FROM booking WHERE room_type_id=7 AND check_in_date=$m1 AND booking_status='Confirmed'")" "10"
+expect "waiters filled the freed slots (none left over while rooms are free)" "$(q "SELECT fn_available_rooms(7, $m1)")" "0"
+expect "no transaction left open on any connection" "$(q "SELECT COUNT(*) FROM information_schema.innodb_trx WHERE trx_mysql_thread_id <> CONNECTION_ID()")" "0"
+rm -rf /tmp/vdb_mix.$$
+
 echo; echo "Global invariants after the stress"
 expect "ledger equals active bookings per night" "$(q "
   SELECT COUNT(*) FROM room_type_inventory i

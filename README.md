@@ -32,15 +32,15 @@ documents, installs dependencies and starts `npm run dev`. Open <http://localhos
 
 ### Demo accounts
 
-Every seeded account uses the password `Demo@1234`. The login page has one-click buttons for the first three.
+Every seeded account uses the password `Demo@1234`. The login page has one-click buttons for every demo account.
 
 | Role | Email | Notes |
 |---|---|---|
 | Guest | `arjun.mehta@example.com` | has a paid, room-assigned upcoming booking |
-| Staff | `staff.koramangala@example.com` | front desk of hotel 1 (Koramangala) |
+| Staff | `staff.koramangala@example.com` | front desk of hotel 1 (Koramangala); each staff login only sees **its own hotel's** bookings |
 | Admin | `admin@example.com` | franchise-wide |
 | Guest | `divya.menon@example.com` | is on a waitlist |
-| Staff | `staff.andheri@example.com`, `staff.bkc@example.com` | the other two hotels |
+| Staff | `staff.andheri@example.com`, `staff.bkc@example.com` | hotels 2 (Andheri) and 3 (BKC); the login page has a button for each |
 
 Other guests: `priya.nair`, `rohan.kulkarni`, `sneha.iyer`, `karan.singh`, `ananya.rao`, `vikram.joshi`, `aditya.verma`,
 `neha.kapoor` (all `@example.com`).
@@ -132,10 +132,12 @@ node scripts/e2e.mjs http://localhost:3000   # with the app running on freshly s
 - no room is assigned to two overlapping stays;
 - at most one live payment per booking;
 - rooms are only assigned to confirmed, paid bookings;
-- no night is sold beyond `total_rooms + 2 × base buffer`.
+- no night is sold beyond `total_rooms + 2 × base buffer`;
+- a second mixed stress run (creates, cancels and payments at once) ends with no deadlocks, the right number of
+  confirmed bookings, and no transaction left open.
 
-`e2e.mjs` drives the real HTTP API with real sessions (about 95 checks): authentication and role boundaries, booking /
-payment / cancellation rules, the waitlist and FIFO promotion, the front desk and its trigger refusals, the admin
+`e2e.mjs` drives the real HTTP API with real sessions (about 100 checks): authentication and role boundaries, booking /
+payment / cancellation rules, the waitlist and FIFO promotion, a new guest booking reaching the right hotel's front desk, the front desk and its trigger refusals, the admin
 control plane, the MongoDB aggregation and the page guards. It creates data, so reload the sample data afterwards.
 
 ---
@@ -352,8 +354,8 @@ All API errors have the shape `{ "error": { "code": "…", "message": "…" } }`
 |---|---|---|
 | `/hotels`, `/hotels/[id]` | public | search by city, dates and guests; live availability; amenities from MongoDB |
 | `/book/[roomTypeId]` | guest | live "rooms left" as dates change; shows the exact outcome |
-| `/my-bookings` | guest | Upcoming, Waitlist, Past and cancelled; pay and cancel |
-| `/staff` | staff, admin (read-only) | tabs for arriving today, in house, upcoming, waitlist, history; room assignment |
+| `/my-bookings` | guest | Upcoming, Waitlist, Past and cancelled; pay and cancel; refreshes itself every 10 s, so a waitlist promotion appears without reloading |
+| `/staff` | staff, admin (read-only) | scoped to one hotel; tabs for all active, arriving today, in house, upcoming, waitlist, history; room assignment; refreshes itself every 8 s and announces new bookings |
 | `/admin` | admin | Catalog, Overbooking, Amenities, Inventory plan (chart), Reports |
 
 ### Design decisions and trade-offs
@@ -373,6 +375,9 @@ All API errors have the shape `{ "error": { "code": "…", "message": "…" } }`
   that was out of scope, so a past stay is simply shown as completed.
 - **Seed history is inserted directly.** The engine refuses to book a night that already started, so the few past stays
   in the sample data are inserted with plain `INSERT`s and their ledger rows rebuilt from them.
+- **Transient errors are retried.** If a procedure hits an unexpected error such as a deadlock victim it rolls back and
+  reports `ERROR`; the API retries the whole call up to three times. A failure while promoting waiters never turns a
+  committed cancellation into an error; anyone left waiting is picked up by the next cancellation.
 - **Sessions are JWTs.** A role change does not take effect until the user signs in again (up to 7 days).
 
 ---
@@ -471,5 +476,8 @@ db.hotel_features.aggregate([
 - **"Today's arrivals" is empty.** The sample data is dated relative to the day it was loaded. Reload it with
   `./run.sh --reset`.
 - **Port already in use.** `./run.sh --port 3001`.
+- **A guest's new booking is not on my staff screen.** Staff accounts are scoped to one hotel: check that the booking's
+  hotel matches the staff login (Koramangala, Andheri or BKC). The desk refreshes itself every 8 seconds; the booking is
+  under *All active* (and *Upcoming* if it starts after today).
 - **A booking shows as waitlisted forever.** A waitlist entry is only promoted while its check-in date has not passed.
   After that it is labelled "Waitlist expired".
