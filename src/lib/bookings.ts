@@ -21,6 +21,8 @@ export function toBookingRow(row: BookingDbRow): BookingRow {
     special_requests: row.special_requests,
     booking_status: row.booking_status,
     stay_phase: row.stay_phase,
+    is_open: Boolean(row.is_open),
+    cancellable: Boolean(row.cancellable),
     is_overbooked: Boolean(row.is_overbooked),
     booking_date: row.booking_date,
     total_amount: Number(row.total_amount),

@@ -73,6 +73,10 @@ export interface BookingRow {
   special_requests: string | null;
   booking_status: BookingStatus;
   stay_phase: StayPhase;
+  /** Not cancelled and the stay has not ended. */
+  is_open: boolean;
+  /** Not cancelled and the stay has not started. */
+  cancellable: boolean;
   is_overbooked: boolean;
   booking_date: string;
   total_amount: number;
