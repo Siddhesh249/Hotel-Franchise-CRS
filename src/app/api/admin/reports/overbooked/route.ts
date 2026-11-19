@@ -1,33 +1,22 @@
-/**
- * GET /api/admin/reports/overbooked
- *
- * Admin only. Returns currently-overbooked confirmed bookings.
- */
+/** GET /api/admin/reports/overbooked: confirmed bookings that rely on the overbooking buffer. */
 
 import { NextResponse } from 'next/server';
 import pool from '@/lib/db';
-import { adminSession } from '@/lib/admin';
-import { apiError } from '@/lib/authz';
+import { adminSession, serverError } from '@/lib/admin';
 
 export async function GET() {
   const { denied } = await adminSession();
   if (denied) return denied;
   try {
     const [rows] = await pool.query<any[]>(
-      `SELECT b.booking_id, b.check_in_date, b.check_out_date, b.booking_status,
-              b.total_amount, b.is_overbooked,
-              g.first_name, g.last_name, g.email,
-              rt.type_name, h.hotel_name, h.city
-         FROM booking b
-         JOIN guest g ON g.guest_id = b.guest_id
-         JOIN room_type rt ON rt.room_type_id = b.room_type_id
-         JOIN hotel h ON h.hotel_id = rt.hotel_id
-        WHERE b.is_overbooked = TRUE
-          AND b.booking_status IN ('Confirmed','CheckedIn')
-        ORDER BY b.check_in_date, h.hotel_name`,
+      `SELECT booking_id, hotel_name, type_name, first_name, last_name,
+              check_in_date, check_out_date, total_amount
+         FROM vw_booking_details
+        WHERE is_overbooked = TRUE AND booking_status = 'Confirmed' AND stay_phase <> 'Past'
+        ORDER BY check_in_date, hotel_name, booking_id`,
     );
     return NextResponse.json(rows);
-  } catch {
-    return apiError('DATABASE_ERROR', 'Unable to generate the overbooking report', 500);
+  } catch (error) {
+    return serverError('DATABASE_ERROR', 'Unable to generate the overbooking report', error);
   }
 }

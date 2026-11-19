@@ -37,7 +37,12 @@ graph ER {
     payment              [shape=box, style="filled,bold", fillcolor="#9FC5E8", peripheries=2, fontsize=13, fontname="Helvetica-Bold", label="payment"];
     cancellation_history [shape=box, style="filled,bold", fillcolor="#9FC5E8", peripheries=2, fontsize=13, fontname="Helvetica-Bold", label="cancellation_history"];
 
+    staff_account        [shape=box, style="filled,bold", fillcolor="#9FC5E8", fontsize=13, fontname="Helvetica-Bold", label="staff_account"];
+    daily_inventory_plan [shape=box, style="filled,bold", fillcolor="#9FC5E8", peripheries=2, fontsize=13, fontname="Helvetica-Bold", label="daily_inventory_plan"];
+
     /* ================= RELATIONSHIPS ================= */
+    rel_staffs   [shape=diamond, style=filled, fillcolor="#FFD966", fontsize=11, label="WORKS_AT"];
+    rel_planned  [shape=diamond, style=filled, fillcolor="#FFD966", peripheries=2, fontsize=11, label="PLANNED_FOR"];
     rel_has        [shape=diamond, style=filled, fillcolor="#FFD966", fontsize=11, label="HAS"];
     rel_offers     [shape=diamond, style=filled, fillcolor="#FFD966", fontsize=11, label="OFFERS"];
     rel_contains   [shape=diamond, style=filled, fillcolor="#FFD966", fontsize=11, label="CONTAINS"];
@@ -99,8 +104,9 @@ graph ER {
     guest__phone      [label="phone"];
     guest__address    [label="address"];
     guest__registered [label="registered_on"];
+    guest__hash       [label="password_hash"];
     guest -- guest__id; guest -- guest__fname; guest -- guest__lname;
-    guest -- guest__email; guest -- guest__phone; guest -- guest__address; guest -- guest__registered;
+    guest -- guest__email; guest -- guest__phone; guest -- guest__address; guest -- guest__registered; guest -- guest__hash;
 
     // overbooking_policy
     op__id      [label=<<U>policy_id</U>>];
@@ -125,6 +131,22 @@ graph ER {
     bk__amount    [label="total_amount"];
     booking -- bk__id; booking -- bk__checkin; booking -- bk__checkout; booking -- bk__guests;
     booking -- bk__status; booking -- bk__overbook; booking -- bk__date; booking -- bk__amount;
+
+    // staff_account
+    sa__id    [label=<<U>staff_id</U>>];
+    sa__name  [label="full_name"];
+    sa__email [label="email"];
+    sa__role  [label="role (Admin/Staff)"];
+    staff_account -- sa__id; staff_account -- sa__name; staff_account -- sa__email; staff_account -- sa__role;
+
+    // daily_inventory_plan (weak, derived)
+    dip__id    [label=<<U>plan_id</U>>];
+    dip__date  [label="stay_date"];
+    dip__buf   [label="buffer_rooms"];
+    dip__max   [label="max_sellable_rooms"];
+    dip__book  [label="booked_rooms"];
+    daily_inventory_plan -- dip__id; daily_inventory_plan -- dip__date; daily_inventory_plan -- dip__buf;
+    daily_inventory_plan -- dip__max; daily_inventory_plan -- dip__book;
 
     // room_assignment (weak)
     ra__id       [label=<<U>assignment_id</U>>];
@@ -182,5 +204,11 @@ graph ER {
     rel_paid -- payment          [label="N"];
 
     booking -- rel_logged        [label="1"];
-    rel_logged -- cancellation_history [label="N"];
+    rel_logged -- cancellation_history [label="0..1"];
+
+    hotel -- rel_staffs          [label="1"];
+    rel_staffs -- staff_account  [label="N (Staff) / 0 (Admin)"];
+
+    hotel -- rel_planned         [label="1"];
+    rel_planned -- daily_inventory_plan [label="N"];
 }

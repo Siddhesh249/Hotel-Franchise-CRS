@@ -1,17 +1,17 @@
 'use client';
 
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Icon } from '@/components/icons';
-import { StatusBadge } from '@/components/status-badge';
-import { formatCurrency, formatDate } from '@/lib/format';
-import type { StaffBooking } from '@/types';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { BookingBadge, PaymentBadge } from '@/components/status-badge';
+import { Empty, Feedback, PageHeader, Tabs } from '@/components/ui';
+import { formatDate, plural } from '@/lib/format';
+import { useAutoRefresh } from '@/lib/use-auto-refresh';
+import type { BookingRow } from '@/types';
 
 interface StaffPayload {
   hotel: { hotel_id: number; hotel_name: string; city: string; state: string | null };
   today: string;
-  bookings: StaffBooking[];
+  bookings: BookingRow[];
 }
 
 interface RoomOption {
@@ -20,103 +20,101 @@ interface RoomOption {
   floor_number: number | null;
   room_status: string;
   occupied: boolean;
-  assigned_here: boolean;
 }
 
-type Filter = 'arrivals' | 'inhouse' | 'upcoming' | 'all';
+type Filter = 'active' | 'arrivals' | 'inhouse' | 'upcoming' | 'waitlist' | 'history';
+const PAGE = 15;
 
-export function StaffDashboard({ staffName, isAdmin = false }: { staffName: string; isAdmin?: boolean }) {
+export function StaffDashboard({ staffName, isAdmin }: { staffName: string; isAdmin: boolean }) {
   const router = useRouter();
   const [data, setData] = useState<StaffPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [filter, setFilter] = useState<Filter>('arrivals');
+  const [filter, setFilter] = useState<Filter>('active');
   const [search, setSearch] = useState('');
+  const [limit, setLimit] = useState(PAGE);
   const [assigningId, setAssigningId] = useState<number | null>(null);
   const [rooms, setRooms] = useState<RoomOption[]>([]);
-  const [roomsLoading, setRoomsLoading] = useState(false);
   const [selectedRoom, setSelectedRoom] = useState('');
   const [saving, setSaving] = useState(false);
-  const [hotelOptions, setHotelOptions] = useState<Array<{ hotel_id: number; hotel_name: string }>>([]);
+  const [hotels, setHotels] = useState<Array<{ hotel_id: number; hotel_name: string }>>([]);
   const [hotelId, setHotelId] = useState('');
+  const knownIds = useRef<Set<number> | null>(null);
 
   useEffect(() => {
     if (!isAdmin) return;
-    let cancelled = false;
     fetch('/api/admin/hotels', { cache: 'no-store' })
       .then((response) => (response.ok ? response.json() : null))
       .then((payload) => {
-        if (cancelled || !payload?.hotels?.length) return;
-        setHotelOptions(payload.hotels);
-        setHotelId((current) => current || String(payload.hotels[0].hotel_id));
+        if (!payload?.hotels?.length) return;
+        setHotels(payload.hotels);
+        setHotelId(String(payload.hotels[0].hotel_id));
       })
       .catch(() => setError('Unable to load the hotel list.'));
-    return () => {
-      cancelled = true;
-    };
   }, [isAdmin]);
 
-  const load = useCallback(async () => {
-    if (isAdmin && !hotelId) {
-      setLoading(false);
-      return;
-    }
-    setError('');
+  const load = useCallback(async (background = false) => {
+    if (isAdmin && !hotelId) return;
     try {
-      const url = isAdmin ? `/api/staff/bookings?hotel_id=${hotelId}` : '/api/staff/bookings';
-      const response = await fetch(url, { cache: 'no-store' });
+      const response = await fetch(isAdmin ? `/api/staff/bookings?hotel_id=${hotelId}` : '/api/staff/bookings', { cache: 'no-store' });
       if (response.status === 401) {
         router.push('/login?callbackUrl=/staff');
         return;
       }
       const payload = await response.json().catch(() => null);
       if (!response.ok) {
-        setError(payload?.error?.message ?? 'Unable to load the staff desk.');
+        if (!background) setError(payload?.error?.message ?? 'Unable to load bookings.');
         return;
       }
+      setError('');
+      const incoming = payload.bookings as BookingRow[];
+      if (knownIds.current) {
+        const fresh = incoming.filter((b) => !knownIds.current!.has(b.booking_id));
+        if (fresh.length) {
+          setNotice(`New booking${fresh.length > 1 ? 's' : ''}: ${fresh
+            .map((b) => `#${b.booking_id} ${b.first_name} ${b.last_name}, ${b.type_name}, ${formatDate(b.check_in_date)}`)
+            .join('; ')}`);
+        }
+      }
+      knownIds.current = new Set(incoming.map((b) => b.booking_id));
       setData(payload);
     } catch {
-      setError('We could not reach the reservation service.');
+      if (!background) setError('Could not reach the server.');
     } finally {
       setLoading(false);
     }
   }, [isAdmin, hotelId, router]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => { void load(); }, 0);
-    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
   }, [load]);
 
-  const today = data?.today ?? '';
-  const bookings = useMemo(() => data?.bookings ?? [], [data]);
+  useAutoRefresh(() => void load(true), 8000);
 
-  const stats = useMemo(() => {
-    const arrivals = bookings.filter((b) => b.check_in_date === today && ['Confirmed', 'CheckedIn'].includes(b.booking_status));
-    const inHouse = bookings.filter((b) => b.check_in_date < today && b.check_out_date > today && ['Confirmed', 'CheckedIn'].includes(b.booking_status));
-    const waitlisted = bookings.filter((b) => b.booking_status === 'Waitlisted');
-    const unassigned = arrivals.filter((b) => !b.room_number);
-    return { arrivals, inHouse, waitlisted, unassigned };
-  }, [bookings, today]);
+  const today = data?.today ?? '';
+  const lists = useMemo(() => {
+    const all = data?.bookings ?? [];
+    const confirmed = all.filter((b) => b.booking_status === 'Confirmed' && b.is_open);
+    const arrivals = confirmed.filter((b) => b.check_in_date === today);
+    const inhouse = confirmed.filter((b) => b.check_in_date < today);
+    const upcoming = confirmed.filter((b) => b.check_in_date > today);
+    const waitlist = all.filter((b) => b.booking_status === 'Waitlisted' && b.cancellable);
+    const active = [...confirmed, ...waitlist].sort((a, b) => a.check_in_date.localeCompare(b.check_in_date) || a.booking_id - b.booking_id);
+    const open = new Set(active.map((b) => b.booking_id));
+    return { active, arrivals, inhouse, upcoming, waitlist, history: all.filter((b) => !open.has(b.booking_id)).reverse() };
+  }, [data, today]);
 
   const visible = useMemo(() => {
     const term = search.trim().toLowerCase();
-    let list = bookings;
-    if (filter === 'arrivals') list = bookings.filter((b) => b.check_in_date === today && ['Confirmed', 'CheckedIn'].includes(b.booking_status));
-    if (filter === 'inhouse') list = bookings.filter((b) => b.check_in_date <= today && b.check_out_date > today && ['Confirmed', 'CheckedIn'].includes(b.booking_status));
-    if (filter === 'upcoming') list = bookings.filter((b) => b.check_in_date > today && b.booking_status === 'Confirmed');
-    if (term) {
-      list = list.filter((b) =>
-        `${b.first_name} ${b.last_name}`.toLowerCase().includes(term)
-        || b.email.toLowerCase().includes(term)
-        || String(b.booking_id).includes(term)
-        || b.type_name.toLowerCase().includes(term),
-      );
-    }
-    return list;
-  }, [bookings, filter, search, today]);
+    const list = lists[filter];
+    if (!term) return list;
+    return list.filter((b) =>
+      `${b.first_name} ${b.last_name} ${b.email} ${b.type_name} #${b.booking_id}`.toLowerCase().includes(term));
+  }, [lists, filter, search]);
 
-  async function openAssign(booking: StaffBooking) {
+  async function openAssign(booking: BookingRow) {
     if (assigningId === booking.booking_id) {
       setAssigningId(null);
       return;
@@ -124,25 +122,18 @@ export function StaffDashboard({ staffName, isAdmin = false }: { staffName: stri
     setAssigningId(booking.booking_id);
     setRooms([]);
     setSelectedRoom('');
-    setRoomsLoading(true);
     setError('');
     try {
       const response = await fetch(`/api/staff/rooms?booking_id=${booking.booking_id}`, { cache: 'no-store' });
       const payload = await response.json().catch(() => null);
-      if (!response.ok) {
-        setError(payload?.error?.message ?? 'Unable to load rooms.');
-        return;
-      }
-      setRooms(payload.rooms ?? []);
+      if (!response.ok) setError(payload?.error?.message ?? 'Unable to load rooms.');
+      else setRooms(payload);
     } catch {
-      setError('We could not load the room list.');
-    } finally {
-      setRoomsLoading(false);
+      setError('Could not load the room list.');
     }
   }
 
-  async function assign(booking: StaffBooking) {
-    if (!selectedRoom) return;
+  async function assign(booking: BookingRow) {
     setSaving(true);
     setError('');
     setNotice('');
@@ -153,10 +144,6 @@ export function StaffDashboard({ staffName, isAdmin = false }: { staffName: stri
         body: JSON.stringify({ booking_id: booking.booking_id, room_id: Number(selectedRoom) }),
       });
       const payload = await response.json().catch(() => null);
-      if (response.status === 401) {
-        router.push('/login?callbackUrl=/staff');
-        return;
-      }
       if (!response.ok) {
         setError(payload?.error?.message ?? 'The room could not be assigned.');
         return;
@@ -165,241 +152,125 @@ export function StaffDashboard({ staffName, isAdmin = false }: { staffName: stri
       setAssigningId(null);
       await load();
     } catch {
-      setError('We could not reach the reservation service.');
+      setError('Could not reach the server.');
     } finally {
       setSaving(false);
     }
   }
 
-  const tabs: Array<{ id: Filter; label: string; count: number }> = [
-    { id: 'arrivals', label: "Today's arrivals", count: stats.arrivals.length },
-    { id: 'inhouse', label: 'In house', count: stats.inHouse.length },
-    { id: 'upcoming', label: 'Upcoming', count: bookings.filter((b) => b.check_in_date > today && b.booking_status === 'Confirmed').length },
-    { id: 'all', label: 'All bookings', count: bookings.length },
-  ];
-
   return (
-    <main className="container-page py-10">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="eyebrow">Staff desk</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">
-            {data?.hotel.hotel_name ?? 'Hotel operations'}
-          </h1>
-          <p className="muted mt-1">
-            {data ? `${data.hotel.city}${data.hotel.state ? `, ${data.hotel.state}` : ''} · Virtual today: ${formatDate(data.today, { weekday: true })}` : 'Loading today’s arrivals…'}
-          </p>
-          <p className="mt-1 text-xs text-ink-500">Signed in as {staffName}</p>
-          <p className="mt-1 text-xs text-ink-500">
-            Rooms can be assigned only after the guest&apos;s payment is completed.
-          </p>
-          {isAdmin && (
-            <p className="mt-2 rounded-lg border border-accent-200 bg-accent-50 px-3 py-2 text-xs text-accent-800">
-              Admin view: inspect any hotel&apos;s arrivals. Room assignment is performed by that hotel&apos;s staff account.
-            </p>
-          )}
-        </div>
-        <div className="flex gap-2">
-          {isAdmin && (
-            <label className="mr-2">
-              <span className="sr-only">Hotel</span>
-              <select value={hotelId} onChange={(event) => setHotelId(event.target.value)} className="input h-[38px] py-1.5 text-sm">
-                {hotelOptions.length ? hotelOptions.map((hotel) => (
-                  <option key={hotel.hotel_id} value={hotel.hotel_id}>{hotel.hotel_name}</option>
-                )) : <option value="">Loading hotels…</option>}
+    <main className="container-page animate-fade py-8">
+      <PageHeader
+        title={data?.hotel.hotel_name ?? 'Front desk'}
+        subtitle={data ? `${data.hotel.city} · Today is ${formatDate(data.today, { weekday: true })} · ${staffName}` : 'Loading…'}
+        actions={
+          <>
+            {isAdmin && (
+              <select aria-label="Hotel" value={hotelId} onChange={(e) => { knownIds.current = null; setHotelId(e.target.value); setData(null); setLoading(true); }} className="input w-64">
+                {hotels.map((hotel) => <option key={hotel.hotel_id} value={hotel.hotel_id}>{hotel.hotel_name}</option>)}
               </select>
-            </label>
-          )}
-          <button type="button" onClick={() => void load()} className="btn-secondary btn-sm">
-            <Icon name="refresh" size={14} />
-            Refresh
-          </button>
-          <Link href="/hotels" className="btn-ghost btn-sm">View public site</Link>
-        </div>
-      </header>
+            )}
+            <button type="button" onClick={() => void load()} className="btn-secondary btn-sm">Refresh</button>
+          </>
+        }
+      />
+      {isAdmin && <p className="muted mt-2">Read-only view. Room assignment is done by the hotel’s own front desk account.</p>}
+      <Feedback notice={notice} error={error} />
 
-      <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {[
-          { label: "Today's arrivals", value: stats.arrivals.length, icon: 'calendar' as const },
-          { label: 'Awaiting a room', value: stats.unassigned.length, icon: 'bed' as const },
-          { label: 'In house', value: stats.inHouse.length, icon: 'users' as const },
-          { label: 'Waitlisted', value: stats.waitlisted.length, icon: 'clock' as const },
-        ].map((stat) => (
-          <div key={stat.label} className="card flex items-center gap-3 p-4">
-            <span className="flex size-10 items-center justify-center rounded-xl bg-brand-50 text-brand-700">
-              <Icon name={stat.icon} size={18} />
-            </span>
-            <div>
-              <p className="text-xs font-semibold tracking-wide text-ink-500 uppercase">{stat.label}</p>
-              <p className="text-lg font-bold text-ink-900">{stat.value}</p>
-            </div>
-          </div>
-        ))}
+      <div className="mt-5 flex flex-wrap items-end justify-between gap-3">
+        <Tabs
+          value={filter}
+          onChange={(id) => { setFilter(id); setLimit(PAGE); setAssigningId(null); }}
+          tabs={[
+            { id: 'active', label: 'All active', count: lists.active.length },
+            { id: 'arrivals', label: 'Arriving today', count: lists.arrivals.length },
+            { id: 'inhouse', label: 'In house', count: lists.inhouse.length },
+            { id: 'upcoming', label: 'Upcoming', count: lists.upcoming.length },
+            { id: 'waitlist', label: 'Waitlist', count: lists.waitlist.length },
+            { id: 'history', label: 'History', count: lists.history.length },
+          ]}
+        />
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search guest, email, #id" aria-label="Search bookings" className="input w-60" />
       </div>
 
-      {notice && (
-        <div className="mt-5 flex gap-2 rounded-xl border border-brand-200 bg-brand-50 p-3 text-sm text-brand-900">
-          <Icon name="check" size={16} className="mt-0.5 shrink-0" />
-          <p>{notice}</p>
-        </div>
-      )}
-      {error && (
-        <div className="mt-5 flex gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
-          <Icon name="alert" size={16} className="mt-0.5 shrink-0" />
-          <p>{error}</p>
-        </div>
-      )}
-
-      <div className="mt-7 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex flex-wrap gap-1.5 rounded-xl border border-ink-100 bg-white p-1.5">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setFilter(tab.id)}
-              className={`rounded-lg px-3 py-2 text-sm font-semibold transition ${
-                filter === tab.id ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-ink-50'
-              }`}
-            >
-              {tab.label}
-              <span className={`ml-1.5 text-xs ${filter === tab.id ? 'text-ink-300' : 'text-ink-400'}`}>{tab.count}</span>
-            </button>
-          ))}
-        </div>
-        <label className="relative block w-full lg:w-72">
-          <Icon name="search" size={15} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-400" />
-          <input
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search guest, email, booking…"
-            className="input pl-9"
-            aria-label="Search bookings"
-          />
-        </label>
-      </div>
-
-      <div className="mt-5 space-y-4">
+      <div className="mt-4">
         {loading ? (
-          [1, 2, 3].map((item) => <div key={item} className="skeleton h-44" />)
+          <div className="skeleton h-40" />
         ) : visible.length ? (
-          visible.map((booking) => {
-            const isOpen = assigningId === booking.booking_id;
-            const canAssign = ['Confirmed', 'CheckedIn'].includes(booking.booking_status)
-              && !booking.room_number
-              && booking.payment_status === 'Completed';
-            return (
-              <article key={booking.booking_id} className="card overflow-hidden">
-                <div className="grid gap-4 p-5 md:grid-cols-[1fr_auto] md:items-start">
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <StatusBadge status={booking.booking_status} />
-                      {booking.is_overbooked && <span className="badge-amber">Buffer</span>}
-                      {booking.room_number ? <span className="badge-brand">Room {booking.room_number}</span> : <span className="badge-rose">No room yet</span>}
-                    </div>
-                    <h2 className="mt-2 text-lg font-semibold">
-                      {booking.first_name} {booking.last_name}
-                      <span className="ml-2 text-sm font-normal text-ink-500">#{booking.booking_id}</span>
-                    </h2>
-                    <p className="muted">
-                      {booking.type_name} · {formatDate(booking.check_in_date, { weekday: true })} → {formatDate(booking.check_out_date, { weekday: true })}
-                      {' · '}{booking.num_guests} {booking.num_guests === 1 ? 'guest' : 'guests'}
-                    </p>
-                    <div className="mt-3 grid gap-3 text-sm sm:grid-cols-3">
-                      <div>
-                        <p className="text-xs font-semibold tracking-wide text-ink-500 uppercase">Contact</p>
-                        <p className="mt-0.5 truncate text-ink-700">{booking.email}</p>
-                        <p className="text-xs text-ink-500">{booking.phone || 'No phone'}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs font-semibold tracking-wide text-ink-500 uppercase">Payment</p>
-                        <div className="mt-0.5"><StatusBadge status={booking.payment_status ?? 'Pending'} /></div>
-                      </div>
-                      <div>
-                        <p className="text-xs font-semibold tracking-wide text-ink-500 uppercase">Booking total</p>
-                        <p className="mt-0.5 font-semibold text-ink-800">{formatCurrency(booking.total_amount)}</p>
-                      </div>
-                    </div>
-                    {booking.special_requests && (
-                      <p className="mt-3 rounded-lg bg-sand-50 p-2.5 text-sm text-ink-700">
-                        <b>Request:</b> {booking.special_requests}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="flex flex-wrap gap-2 md:flex-col md:items-stretch">
-                    {canAssign && !isAdmin && (
-                      <button type="button" onClick={() => void openAssign(booking)} className="btn-primary btn-sm">
-                        <Icon name="bed" size={14} />
-                        {isOpen ? 'Close' : 'Assign room'}
-                      </button>
-                    )}
-                    {!booking.room_number
-                      && ['Confirmed', 'CheckedIn'].includes(booking.booking_status)
-                      && booking.payment_status !== 'Completed' && (
-                      <span className="badge-amber justify-center">Payment pending</span>
-                    )}
-                    <Link href={`/hotels/${booking.hotel_id}`} className="btn-secondary btn-sm">Hotel page</Link>
-                  </div>
-                </div>
-
-                {isOpen && (
-                  <div className="border-t border-ink-100 bg-sand-50 p-5">
-                    <p className="text-sm font-semibold text-ink-800">Choose a physical room</p>
-                    <p className="muted mt-1">Only rooms of this booking&apos;s type are shown. Occupied rooms are disabled.</p>
-                    {roomsLoading ? (
-                      <div className="skeleton mt-4 h-11 w-full max-w-sm" />
-                    ) : rooms.length ? (
-                      <div className="mt-4 flex flex-wrap items-end gap-3">
-                        <label className="w-full sm:w-72">
-                          <span className="label">Room</span>
-                          <select value={selectedRoom} onChange={(event) => setSelectedRoom(event.target.value)} className="input">
-                            <option value="">Select a room</option>
-                            {rooms.map((room) => (
-                              <option
-                                key={room.room_id}
-                                value={room.room_id}
-                                disabled={room.occupied || room.room_status !== 'Available'}
-                              >
-                                Room {room.room_number}
-                                {room.floor_number ? ` · Floor ${room.floor_number}` : ''}
-                                {room.occupied ? ' · occupied for these dates' : room.room_status !== 'Available' ? ` · ${room.room_status}` : ' · available'}
-                                {room.assigned_here ? ' · currently assigned' : ''}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <button
-                          type="button"
-                          disabled={!selectedRoom || saving}
-                          onClick={() => void assign(booking)}
-                          className="btn-primary"
-                        >
-                          {saving ? 'Assigning…' : 'Confirm assignment'}
-                        </button>
-                      </div>
-                    ) : (
-                      <p className="mt-3 rounded-lg border border-accent-200 bg-accent-50 p-3 text-sm text-accent-800">
-                        No physical rooms exist for this room type yet. An admin needs to add rooms to the
-                        property before staff can assign one.
-                      </p>
-                    )}
-                  </div>
-                )}
-              </article>
-            );
-          })
-        ) : (
-          <div className="card-muted flex flex-col items-center px-6 py-14 text-center">
-            <span className="flex size-12 items-center justify-center rounded-2xl bg-white text-ink-500">
-              <Icon name="calendar" size={22} />
-            </span>
-            <h3 className="mt-4 text-lg font-semibold">Nothing here right now</h3>
-            <p className="muted mt-1 max-w-md">
-              {filter === 'arrivals'
-                ? 'There are no arrivals scheduled for today. Check Upcoming or All bookings.'
-                : 'No bookings match this view or search.'}
-            </p>
+          <div className="table-shell">
+            <table>
+              <thead>
+                <tr><th>Guest</th><th>Room type</th><th>Stay</th><th>Status</th><th>Room</th></tr>
+              </thead>
+              <tbody>
+                {visible.slice(0, limit).map((booking) => {
+                  const open = booking.booking_status === 'Confirmed' && booking.is_open;
+                  const paid = booking.payment_status === 'Completed';
+                  return (
+                    <Fragment key={booking.booking_id}>
+                      <tr>
+                        <td>
+                          <p className="font-medium text-ink-900">{booking.first_name} {booking.last_name} <span className="font-normal text-ink-400">#{booking.booking_id}</span></p>
+                          <p className="text-xs text-ink-500">{booking.email}{booking.phone ? ` · ${booking.phone}` : ''}</p>
+                        </td>
+                        <td>{booking.type_name}<p className="text-xs text-ink-500">{plural(booking.num_guests, 'guest')}</p></td>
+                        <td className="whitespace-nowrap">
+                          {formatDate(booking.check_in_date)} to {formatDate(booking.check_out_date)}
+                          <p className="text-xs text-ink-500">{plural(booking.nights, 'night')} · booked {formatDate(booking.booking_date, { year: false })}</p>
+                        </td>
+                        <td>
+                          <div className="flex flex-wrap items-center gap-1.5"><BookingBadge booking={booking} /><PaymentBadge booking={booking} /></div>
+                        </td>
+                        <td>
+                          {booking.room_number ? (
+                            <span className="badge-brand">Room {booking.room_number}</span>
+                          ) : open && paid && !isAdmin ? (
+                            <button type="button" className="btn-primary btn-sm" onClick={() => void openAssign(booking)}>
+                              {assigningId === booking.booking_id ? 'Close' : 'Assign'}
+                            </button>
+                          ) : open ? (
+                            <span className="text-xs text-ink-500">{paid ? 'Not assigned' : 'Awaiting payment'}</span>
+                          ) : (
+                            <span className="text-ink-400">-</span>
+                          )}
+                        </td>
+                      </tr>
+                      {assigningId === booking.booking_id && (
+                        <tr className="bg-ink-50">
+                          <td colSpan={5}>
+                            <div className="animate-fade flex flex-wrap items-end gap-3">
+                              <label className="w-72">
+                                <span className="label">Physical room ({booking.type_name})</span>
+                                <select value={selectedRoom} onChange={(e) => setSelectedRoom(e.target.value)} className="input">
+                                  <option value="">Select a room</option>
+                                  {rooms.map((room) => (
+                                    <option key={room.room_id} value={room.room_id} disabled={room.occupied || room.room_status !== 'Available'}>
+                                      {room.room_number}
+                                      {room.occupied ? ' · taken for these dates' : room.room_status !== 'Available' ? ` · ${room.room_status}` : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <button type="button" className="btn-primary" disabled={!selectedRoom || saving} onClick={() => void assign(booking)}>
+                                {saving ? 'Assigning…' : 'Assign room'}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
+        ) : (
+          <Empty title="Nothing here">{search ? 'No booking matches the search.' : 'No bookings in this view.'}</Empty>
+        )}
+        {visible.length > limit && (
+          <button type="button" className="btn-secondary mt-3" onClick={() => setLimit((value) => value + PAGE)}>
+            Show more ({visible.length - limit} left)
+          </button>
         )}
       </div>
     </main>

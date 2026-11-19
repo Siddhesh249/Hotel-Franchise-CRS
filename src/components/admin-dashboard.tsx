@@ -1,443 +1,191 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
-import { Icon } from '@/components/icons';
+import { FormEvent, useCallback, useEffect, useState } from 'react';
 import { AdminAmenitiesEditor } from '@/components/admin-amenities';
 import { AdminInventoryChart } from '@/components/admin-inventory-chart';
-import { formatCurrency, humanize } from '@/lib/format';
+import { Feedback, PageHeader, Tabs } from '@/components/ui';
+import { api } from '@/lib/client-api';
+import { formatCurrency, formatDate } from '@/lib/format';
 
 type Hotel = {
-  hotel_id: number;
-  franchise_id: number;
-  hotel_name: string;
-  city: string;
-  state: string | null;
-  address: string | null;
-  star_rating: number | null;
-  contact_number: string | null;
-  room_type_count: number;
-  physical_rooms: number;
+  hotel_id: number; franchise_id: number; hotel_name: string; city: string; state: string | null;
+  address: string | null; star_rating: number | null; contact_number: string | null;
+  room_type_count: number; physical_rooms: number;
 };
-
 type Franchise = { franchise_id: number; franchise_name: string };
 type RoomType = {
-  room_type_id: number;
-  hotel_id: number;
-  hotel_name: string;
-  type_name: string;
-  base_price: number | string;
-  max_occupancy: number;
-  total_rooms: number;
-  overbook_percentage: number | string;
-  physical_room_count: number;
+  room_type_id: number; hotel_id: number; hotel_name: string; type_name: string; base_price: number | string;
+  max_occupancy: number; total_rooms: number; overbook_percentage: number | string; physical_room_count: number;
 };
-type Row = Record<string, unknown>;
-type Tab = 'catalog' | 'policies' | 'amenities' | 'inventory' | 'reports';
-
-const field = 'input';
-
-async function api(url: string, options?: RequestInit): Promise<unknown> {
-  const response = await fetch(url, options);
-  if (response.status === 401 && typeof window !== 'undefined') {
-    window.location.href = new URL(`/login?callbackUrl=${encodeURIComponent(window.location.pathname)}`, window.location.origin).href;
-    throw new Error('Sign in is required.');
-  }
-  const data: unknown = await response.json().catch(() => null);
-  if (!response.ok) {
-    const message = typeof data === 'object' && data && 'error' in data
-      ? String((data as { error: { message?: string } }).error.message ?? 'Request failed')
-      : 'Request failed';
-    throw new Error(message);
-  }
-  return data;
-}
-
-function SectionHeading({ title, detail }: { title: string; detail: string }) {
-  return (
-    <div className="mb-4">
-      <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
-      <p className="muted mt-1">{detail}</p>
-    </div>
-  );
-}
-
-function ReportTable({ title, rows }: { title: string; rows: Row[] }) {
-  const columns = rows.length ? Object.keys(rows[0]) : [];
-  return (
-    <article className="table-shell">
-      <h3 className="border-b border-ink-100 bg-sand-50 px-4 py-3 text-sm font-bold text-ink-800">{title}</h3>
-      {rows.length ? (
-        <table>
-          <thead>
-            <tr>
-              {columns.map((column) => <th key={column}>{humanize(column)}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, index) => (
-              <tr key={index}>
-                {columns.map((column) => (
-                  <td key={column}>{String(row[column] ?? '—')}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        <p className="p-4 text-sm text-ink-500">No data loaded.</p>
-      )}
-    </article>
-  );
-}
+type Tab = 'catalog' | 'overbooking' | 'amenities' | 'inventory' | 'reports';
+type OverbookedRow = {
+  booking_id: number; hotel_name: string; type_name: string; first_name: string; last_name: string;
+  check_in_date: string; check_out_date: string; total_amount: string;
+};
+type AmenityRow = { city: string; amenity: string; hotels_offering: number };
 
 export function AdminDashboard() {
   const [hotels, setHotels] = useState<Hotel[]>([]);
   const [franchises, setFranchises] = useState<Franchise[]>([]);
   const [types, setTypes] = useState<RoomType[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<Tab>('catalog');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [tab, setTab] = useState<Tab>('catalog');
-
-  const [editingHotel, setEditingHotel] = useState<Hotel | null>(null);
-  const [editingType, setEditingType] = useState<RoomType | null>(null);
-
-  const [overbooked, setOverbooked] = useState<Row[]>([]);
-  const [amenityReport, setAmenityReport] = useState<Row[]>([]);
-  const [reportLoading, setReportLoading] = useState(false);
-  const [reportsLoaded, setReportsLoaded] = useState(false);
+  const [hotelForm, setHotelForm] = useState<Hotel | 'new' | null>(null);
+  const [typeForm, setTypeForm] = useState<RoomType | 'new' | null>(null);
+  const [overbooked, setOverbooked] = useState<OverbookedRow[]>([]);
+  const [amenityReport, setAmenityReport] = useState<AmenityRow[]>([]);
 
   const load = useCallback(async () => {
-    setError('');
     try {
       const [catalog, roomTypes] = await Promise.all([
-        api('/api/admin/hotels') as Promise<{ hotels: Hotel[]; franchises: Franchise[] }>,
-        api('/api/admin/room-types') as Promise<RoomType[]>,
+        api<{ hotels: Hotel[]; franchises: Franchise[] }>('/api/admin/hotels'),
+        api<RoomType[]>('/api/admin/room-types'),
       ]);
       setHotels(catalog.hotels);
       setFranchises(catalog.franchises);
       setTypes(roomTypes);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load the catalog.');
-    } finally {
-      setLoading(false);
+    }
+  }, []);
+
+  const loadReports = useCallback(async () => {
+    try {
+      const [over, amenities] = await Promise.all([
+        api<OverbookedRow[]>('/api/admin/reports/overbooked'),
+        api<AmenityRow[]>('/api/admin/reports/amenities').catch((err: Error) => {
+          setError(err.message);
+          return [] as AmenityRow[];
+        }),
+      ]);
+      setOverbooked(over);
+      setAmenityReport(amenities);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to load reports.');
     }
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => { void load(); }, 0);
-    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
   }, [load]);
 
-  // Reports load on first visit to the tab (or via the refresh button).
-  const loadReports = useCallback(async () => {
-    setReportLoading(true);
-    setError('');
-    try {
-      const [over, amenities] = await Promise.all([
-        api('/api/admin/reports/overbooked') as Promise<Row[]>,
-        api('/api/admin/reports/amenities') as Promise<Row[]>,
-      ]);
-      setOverbooked(over);
-      setAmenityReport(amenities);
-      setReportsLoaded(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to load reports.');
-    } finally {
-      setReportLoading(false);
-    }
-  }, []);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (tab === 'reports') void loadReports();
+  }, [tab, loadReports]);
 
-  async function submitHotel(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const body = Object.fromEntries(new FormData(form));
+  async function run(action: () => Promise<unknown>, success: string) {
     setError('');
     setNotice('');
     try {
-      await api('/api/admin/hotels', {
-        method: editingHotel ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editingHotel ? { ...body, hotel_id: editingHotel.hotel_id } : body),
-      });
-      setNotice(editingHotel ? 'Hotel updated.' : 'Hotel created.');
-      setEditingHotel(null);
-      form.reset();
+      await action();
+      setNotice(success);
       await load();
+      return true;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to save the hotel.');
+      setError(err instanceof Error ? err.message : 'Something went wrong.');
+      return false;
     }
+  }
+
+  async function submitHotel(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const body = Object.fromEntries(new FormData(event.currentTarget));
+    const editing = hotelForm !== 'new' && hotelForm !== null ? hotelForm : null;
+    const ok = await run(
+      () => api('/api/admin/hotels', { method: editing ? 'PUT' : 'POST', body: editing ? { ...body, hotel_id: editing.hotel_id } : body }),
+      editing ? 'Hotel updated.' : 'Hotel created.',
+    );
+    if (ok) setHotelForm(null);
   }
 
   async function submitType(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = event.currentTarget;
-    const body = Object.fromEntries(new FormData(form));
-    setError('');
-    setNotice('');
-    try {
-      await api('/api/admin/room-types', {
-        method: editingType ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editingType ? { ...body, room_type_id: editingType.room_type_id } : body),
-      });
-      setNotice(editingType ? 'Room type updated.' : 'Room type created.');
-      setEditingType(null);
-      form.reset();
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to save the room type.');
-    }
+    const body = Object.fromEntries(new FormData(event.currentTarget));
+    const editing = typeForm !== 'new' && typeForm !== null ? typeForm : null;
+    const ok = await run(
+      () => api('/api/admin/room-types', { method: editing ? 'PUT' : 'POST', body: editing ? { ...body, room_type_id: editing.room_type_id, hotel_id: editing.hotel_id } : body }),
+      editing ? 'Room type updated.' : 'Room type created.',
+    );
+    if (ok) setTypeForm(null);
   }
 
-  async function deleteItem(url: string, label: string) {
-    if (!window.confirm(`Delete ${label}? This cannot be undone.`)) return;
-    setError('');
-    setNotice('');
-    try {
-      await api(url, { method: 'DELETE' });
-      setNotice(`${label} deleted.`);
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : `Unable to delete ${label}.`);
-    }
-  }
+  const remove = (url: string, label: string) => {
+    if (window.confirm(`Delete ${label}? This cannot be undone.`)) void run(() => api(url, { method: 'DELETE' }), `${label} deleted.`);
+  };
 
-  function editHotel(hotel: Hotel) {
-    setEditingHotel(hotel);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }
-
-  function editRoomType(roomType: RoomType) {
-    setEditingType(roomType);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }
-
-  async function syncRooms(roomType: RoomType) {    setError('');
-    setNotice('');
-    try {
-      const data = await api(`/api/admin/room-types/${roomType.room_type_id}/rooms`, { method: 'POST' }) as {
-        created: number;
-        physical_room_count: number;
-      };
-      setNotice(
-        data.created
-          ? `${data.created} physical room(s) created for ${roomType.hotel_name} · ${roomType.type_name}.`
-          : `All ${data.physical_room_count} physical rooms already exist.`,
-      );
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to create physical rooms.');
-    }
-  }
-
-  async function savePolicy(roomType: RoomType, event: FormEvent<HTMLFormElement>) {
+  async function savePolicy(type: RoomType, event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const percent = Number(new FormData(event.currentTarget).get('percent'));
-    setError('');
-    setNotice('');
-    try {
-      await api(`/api/admin/overbooking-policy/${roomType.room_type_id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ overbook_percentage: percent }),
-      });
-      setNotice(`Buffer updated for ${roomType.hotel_name} · ${roomType.type_name}.`);
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to save the policy.');
-    }
+    await run(
+      () => api(`/api/admin/overbooking-policy/${type.room_type_id}`, { method: 'PUT', body: { overbook_percentage: percent } }),
+      `Buffer saved for ${type.hotel_name}, ${type.type_name}.`,
+    );
   }
 
-  const stats = useMemo(() => ({
-    hotels: hotels.length,
-    types: types.length,
-    rooms: hotels.reduce((sum, hotel) => sum + Number(hotel.physical_rooms ?? 0), 0),
-    buffers: types.filter((type) => Number(type.overbook_percentage) > 0).length,
-  }), [hotels, types]);
-
-  const tabs: Array<{ id: Tab; label: string; icon: 'building' | 'shield' | 'sparkles' | 'chart' | 'calendar' }> = [
-    { id: 'catalog', label: 'Catalog', icon: 'building' },
-    { id: 'policies', label: 'Overbooking', icon: 'shield' },
-    { id: 'amenities', label: 'Amenities', icon: 'sparkles' },
-    { id: 'inventory', label: 'Inventory chart', icon: 'calendar' },
-    { id: 'reports', label: 'Reports', icon: 'chart' },
-  ];
+  const editingHotel = hotelForm && hotelForm !== 'new' ? hotelForm : null;
+  const editingType = typeForm && typeForm !== 'new' ? typeForm : null;
 
   return (
     <div>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {[
-          { label: 'Hotels', value: stats.hotels, icon: 'building' as const },
-          { label: 'Room types', value: stats.types, icon: 'bed' as const },
-          { label: 'Physical rooms', value: stats.rooms, icon: 'users' as const },
-          { label: 'Types with a buffer policy', value: stats.buffers, icon: 'shield' as const },
-        ].map((stat) => (
-          <div key={stat.label} className="card flex items-center gap-3 p-4">
-            <span className="flex size-10 items-center justify-center rounded-xl bg-brand-50 text-brand-700">
-              <Icon name={stat.icon} size={18} />
-            </span>
-            <div>
-              <p className="text-xs font-semibold tracking-wide text-ink-500 uppercase">{stat.label}</p>
-              <p className="text-lg font-bold text-ink-900">{loading ? '…' : stat.value}</p>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {notice && (
-        <div className="mt-5 flex gap-2 rounded-xl border border-brand-200 bg-brand-50 p-3 text-sm text-brand-900">
-          <Icon name="check" size={16} className="mt-0.5 shrink-0" />
-          <p>{notice}</p>
-        </div>
-      )}
-      {error && (
-        <div className="mt-5 flex gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
-          <Icon name="alert" size={16} className="mt-0.5 shrink-0" />
-          <p>{error}</p>
-        </div>
-      )}
-
-      <div className="mt-7 flex flex-wrap gap-1.5 rounded-xl border border-ink-100 bg-white p-1.5">
-        {tabs.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => {
-              setTab(item.id);
-              if (item.id === 'reports' && !reportsLoaded) void loadReports();
-            }}
-            className={`flex items-center gap-2 rounded-lg px-3.5 py-2.5 text-sm font-semibold transition ${
-              tab === item.id ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-ink-50'
-            }`}
-          >
-            <Icon name={item.icon} size={15} />
-            {item.label}
-          </button>
-        ))}
+      <PageHeader title="Admin" subtitle="Catalog, overbooking policy, amenities, inventory plan and reports." />
+      <Feedback notice={notice} error={error} />
+      <div className="mt-5">
+        <Tabs
+          value={tab}
+          onChange={(id) => { setTab(id); setNotice(''); setError(''); }}
+          tabs={[
+            { id: 'catalog', label: 'Catalog' },
+            { id: 'overbooking', label: 'Overbooking' },
+            { id: 'amenities', label: 'Amenities' },
+            { id: 'inventory', label: 'Inventory plan' },
+            { id: 'reports', label: 'Reports' },
+          ]}
+        />
       </div>
 
       {tab === 'catalog' && (
-        <div className="mt-6 space-y-8">
-          <div className="grid gap-5 lg:grid-cols-2">
-            <section className="card p-5">
-              <div className="flex items-start justify-between gap-3">
-                <SectionHeading title={editingHotel ? 'Edit hotel' : 'Create hotel'} detail="Hotels belong to a franchise and appear on the public site immediately." />
-                {editingHotel && (
-                  <button type="button" className="btn-ghost btn-sm" onClick={() => setEditingHotel(null)}>Cancel</button>
-                )}
-              </div>
-              <form key={editingHotel?.hotel_id ?? 'new-hotel'} className="grid gap-3 sm:grid-cols-2" onSubmit={submitHotel}>
-                <label className="sm:col-span-2">
-                  <span className="label">Franchise</span>
-                  <select required name="franchise_id" defaultValue={editingHotel?.franchise_id ?? ''} className={field}>
-                    <option disabled value="">Choose franchise</option>
-                    {franchises.map((franchise) => (
-                      <option key={franchise.franchise_id} value={franchise.franchise_id}>{franchise.franchise_name}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="sm:col-span-2">
-                  <span className="label">Hotel name</span>
-                  <input required name="hotel_name" defaultValue={editingHotel?.hotel_name ?? ''} className={field} placeholder="Nightingale Suites - Indiranagar" />
-                </label>
-                <label>
-                  <span className="label">City</span>
-                  <input required name="city" defaultValue={editingHotel?.city ?? ''} className={field} placeholder="Bengaluru" />
-                </label>
-                <label>
-                  <span className="label">State</span>
-                  <input name="state" defaultValue={editingHotel?.state ?? ''} className={field} placeholder="Karnataka" />
-                </label>
-                <label className="sm:col-span-2">
-                  <span className="label">Address</span>
-                  <input name="address" defaultValue={editingHotel?.address ?? ''} className={field} placeholder="Street, area" />
-                </label>
-                <label>
-                  <span className="label">Contact number</span>
-                  <input name="contact_number" defaultValue={editingHotel?.contact_number ?? ''} className={field} placeholder="080…" />
-                </label>
-                <label>
-                  <span className="label">Star rating</span>
-                  <input required name="star_rating" type="number" min="1" max="7" defaultValue={editingHotel?.star_rating ?? 4} className={field} />
-                </label>
-                <button type="submit" className="btn-primary sm:col-span-2">
-                  {editingHotel ? 'Save hotel' : 'Create hotel'}
-                </button>
-              </form>
-            </section>
-
-            <section className="card p-5">
-              <div className="flex items-start justify-between gap-3">
-                <SectionHeading title={editingType ? 'Edit room type' : 'Create room type'} detail="Physical room rows are what staff assign; keep total rooms in sync with the building." />
-                {editingType && (
-                  <button type="button" className="btn-ghost btn-sm" onClick={() => setEditingType(null)}>Cancel</button>
-                )}
-              </div>
-              <form key={editingType?.room_type_id ?? 'new-type'} className="grid gap-3 sm:grid-cols-2" onSubmit={submitType}>
-                <label className="sm:col-span-2">
-                  <span className="label">Hotel</span>
-                  <select required name="hotel_id" defaultValue={editingType?.hotel_id ?? ''} className={field}>
-                    <option disabled value="">Choose hotel</option>
-                    {hotels.map((hotel) => (
-                      <option key={hotel.hotel_id} value={hotel.hotel_id}>{hotel.hotel_name}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span className="label">Type name</span>
-                  <input required name="type_name" defaultValue={editingType?.type_name ?? ''} className={field} placeholder="Deluxe" />
-                </label>
-                <label>
-                  <span className="label">Base price (₹)</span>
-                  <input required name="base_price" type="number" min="1" step="0.01" defaultValue={editingType?.base_price ?? ''} className={field} placeholder="5500" />
-                </label>
-                <label>
-                  <span className="label">Max occupancy</span>
-                  <input required name="max_occupancy" type="number" min="1" defaultValue={editingType?.max_occupancy ?? 2} className={field} />
-                </label>
-                <label>
-                  <span className="label">Total physical rooms</span>
-                  <input required name="total_rooms" type="number" min="1" defaultValue={editingType?.total_rooms ?? 1} className={field} />
-                </label>
-                <button type="submit" className="btn-primary sm:col-span-2">
-                  {editingType ? 'Save room type' : 'Create room type'}
-                </button>
-              </form>
-            </section>
-          </div>
-
+        <div className="mt-5 space-y-8">
           <section>
-            <SectionHeading title="Hotels" detail="Deleting a hotel also removes its MongoDB feature document. Hotels with bookings cannot be deleted." />
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-base">Hotels</h2>
+              <button type="button" className="btn-primary btn-sm" onClick={() => setHotelForm(hotelForm ? null : 'new')}>
+                {hotelForm ? 'Close form' : 'Add hotel'}
+              </button>
+            </div>
+            {hotelForm && (
+              <form key={editingHotel?.hotel_id ?? 'new'} onSubmit={submitHotel} className="card animate-fade mb-3 grid gap-3 p-4 sm:grid-cols-3">
+                <p className="eyebrow sm:col-span-3">{editingHotel ? `Edit ${editingHotel.hotel_name}` : 'New hotel'}</p>
+                <label><span className="label">Franchise</span>
+                  <select required name="franchise_id" defaultValue={editingHotel?.franchise_id ?? franchises[0]?.franchise_id} className="input">
+                    {franchises.map((f) => <option key={f.franchise_id} value={f.franchise_id}>{f.franchise_name}</option>)}
+                  </select></label>
+                <label className="sm:col-span-2"><span className="label">Hotel name</span><input required name="hotel_name" defaultValue={editingHotel?.hotel_name} className="input" /></label>
+                <label><span className="label">City</span><input required name="city" defaultValue={editingHotel?.city} className="input" /></label>
+                <label><span className="label">State</span><input name="state" defaultValue={editingHotel?.state ?? ''} className="input" /></label>
+                <label><span className="label">Stars (1-5)</span><input required name="star_rating" type="number" min="1" max="5" defaultValue={editingHotel?.star_rating ?? 4} className="input" /></label>
+                <label className="sm:col-span-2"><span className="label">Address</span><input name="address" defaultValue={editingHotel?.address ?? ''} className="input" /></label>
+                <label><span className="label">Contact number</span><input name="contact_number" maxLength={15} defaultValue={editingHotel?.contact_number ?? ''} className="input" /></label>
+                <div className="sm:col-span-3"><button type="submit" className="btn-primary">{editingHotel ? 'Save hotel' : 'Create hotel'}</button></div>
+              </form>
+            )}
             <div className="table-shell">
               <table>
-                <thead>
-                  <tr>
-                    <th>Hotel</th><th>City</th><th>Rating</th><th>Types</th><th>Rooms</th><th className="text-right">Actions</th>
-                  </tr>
-                </thead>
+                <thead><tr><th>Hotel</th><th>City</th><th>Stars</th><th>Room types</th><th>Rooms</th><th /></tr></thead>
                 <tbody>
                   {hotels.map((hotel) => (
                     <tr key={hotel.hotel_id}>
                       <td className="font-medium text-ink-900">{hotel.hotel_name}</td>
-                      <td>{hotel.city}{hotel.state ? `, ${hotel.state}` : ''}</td>
-                      <td>{hotel.star_rating ? `${hotel.star_rating} ★` : '—'}</td>
+                      <td>{hotel.city}</td>
+                      <td>{hotel.star_rating ?? '-'}</td>
                       <td>{hotel.room_type_count}</td>
                       <td>{hotel.physical_rooms}</td>
                       <td>
                         <div className="flex justify-end gap-2">
-                          <button type="button" onClick={() => editHotel(hotel)} className="btn-secondary btn-sm">
-                            <Icon name="edit" size={13} />
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void deleteItem(`/api/admin/hotels?hotel_id=${hotel.hotel_id}`, hotel.hotel_name)}
-                            className="btn-danger btn-sm"
-                          >
-                            <Icon name="trash" size={13} />
-                            Delete
-                          </button>
+                          <button type="button" className="btn-secondary btn-sm" onClick={() => setHotelForm(hotel)}>Edit</button>
+                          <button type="button" className="btn-danger btn-sm" onClick={() => remove(`/api/admin/hotels?hotel_id=${hotel.hotel_id}`, hotel.hotel_name)}>Delete</button>
                         </div>
                       </td>
                     </tr>
@@ -448,14 +196,34 @@ export function AdminDashboard() {
           </section>
 
           <section>
-            <SectionHeading title="Room types" detail="Total rooms is the physical inventory of the category. Overbooking buffers are tuned in the next tab." />
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-base">Room types</h2>
+              <button type="button" className="btn-primary btn-sm" onClick={() => setTypeForm(typeForm ? null : 'new')}>
+                {typeForm ? 'Close form' : 'Add room type'}
+              </button>
+            </div>
+            {typeForm && (
+              <form key={editingType?.room_type_id ?? 'new'} onSubmit={submitType} className="card animate-fade mb-3 grid gap-3 p-4 sm:grid-cols-5">
+                <p className="eyebrow sm:col-span-5">{editingType ? `Edit ${editingType.hotel_name}, ${editingType.type_name}` : 'New room type'}</p>
+                {!editingType && (
+                  <label className="sm:col-span-2"><span className="label">Hotel</span>
+                    <select required name="hotel_id" defaultValue={hotels[0]?.hotel_id} className="input">
+                      {hotels.map((h) => <option key={h.hotel_id} value={h.hotel_id}>{h.hotel_name}</option>)}
+                    </select></label>
+                )}
+                <label><span className="label">Name</span><input required name="type_name" defaultValue={editingType?.type_name} className="input" /></label>
+                <label><span className="label">Price / night (₹)</span><input required name="base_price" type="number" min="1" step="0.01" defaultValue={editingType?.base_price} className="input" /></label>
+                <label><span className="label">Sleeps</span><input required name="max_occupancy" type="number" min="1" defaultValue={editingType?.max_occupancy ?? 2} className="input" /></label>
+                <label><span className="label">Physical rooms</span><input required name="total_rooms" type="number" min="1" defaultValue={editingType?.total_rooms ?? 1} className="input" /></label>
+                <div className="sm:col-span-5">
+                  <button type="submit" className="btn-primary">{editingType ? 'Save room type' : 'Create room type'}</button>
+                  <span className="muted ml-3">Changing the room count adds or removes physical rooms to match.</span>
+                </div>
+              </form>
+            )}
             <div className="table-shell">
               <table>
-                <thead>
-                  <tr>
-                    <th>Hotel</th><th>Type</th><th>Rate</th><th>Occupancy</th><th>Rooms</th><th>Buffer</th><th className="text-right">Actions</th>
-                  </tr>
-                </thead>
+                <thead><tr><th>Hotel</th><th>Type</th><th>Rate</th><th>Sleeps</th><th>Rooms</th><th /></tr></thead>
                 <tbody>
                   {types.map((type) => (
                     <tr key={type.room_type_id}>
@@ -463,28 +231,11 @@ export function AdminDashboard() {
                       <td className="font-medium text-ink-900">{type.type_name}</td>
                       <td>{formatCurrency(type.base_price)}</td>
                       <td>{type.max_occupancy}</td>
-                      <td>{type.physical_room_count} / {type.total_rooms}</td>
-                      <td>{Number(type.overbook_percentage)}%</td>
+                      <td>{type.total_rooms}</td>
                       <td>
                         <div className="flex justify-end gap-2">
-                          {Number(type.physical_room_count) < Number(type.total_rooms) && (
-                            <button type="button" onClick={() => void syncRooms(type)} className="btn-secondary btn-sm">
-                              <Icon name="plus" size={13} />
-                              Create rooms
-                            </button>
-                          )}
-                          <button type="button" onClick={() => editRoomType(type)} className="btn-secondary btn-sm">
-                            <Icon name="edit" size={13} />
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void deleteItem(`/api/admin/room-types?room_type_id=${type.room_type_id}`, `${type.hotel_name} ${type.type_name}`)}
-                            className="btn-danger btn-sm"
-                          >
-                            <Icon name="trash" size={13} />
-                            Delete
-                          </button>
+                          <button type="button" className="btn-secondary btn-sm" onClick={() => setTypeForm(type)}>Edit</button>
+                          <button type="button" className="btn-danger btn-sm" onClick={() => remove(`/api/admin/room-types?room_type_id=${type.room_type_id}`, `${type.hotel_name} ${type.type_name}`)}>Delete</button>
                         </div>
                       </td>
                     </tr>
@@ -492,90 +243,99 @@ export function AdminDashboard() {
                 </tbody>
               </table>
             </div>
-            {types.some((type) => Number(type.physical_room_count) !== Number(type.total_rooms)) && (
-              <p className="mt-3 rounded-xl border border-accent-200 bg-accent-50 p-3 text-sm text-accent-800">
-                Some room types do not match their physical room rows. Use “Create rooms” to add missing rows;
-                extra rows are never deleted automatically because they may already have assignments.
-              </p>
-            )}
           </section>
         </div>
       )}
 
-      {tab === 'policies' && (
-        <div className="mt-6 space-y-4">
-          <SectionHeading
-            title="Overbooking control"
-            detail="The percentage sets the base buffer: floor(total rooms × percent / 100). The database then adapts that buffer per night — an under-booked previous night raises tomorrow's sellable ceiling, an over-booked night lowers it. The Inventory chart shows the resulting daily plan."
-          />
-          {types.map((type) => {
-            const percent = Number(type.overbook_percentage);
-            const buffer = Math.floor(Number(type.total_rooms) * percent / 100);
-            return (
-              <form key={type.room_type_id} onSubmit={(event) => void savePolicy(type, event)} className="card grid gap-4 p-5 md:grid-cols-[1fr_130px_130px_120px_100px] md:items-center">
-                <div>
-                  <p className="font-semibold text-ink-900">{type.hotel_name}</p>
-                  <p className="muted">{type.type_name} · {type.total_rooms} physical rooms</p>
-                </div>
-                <label>
-                  <span className="label">Buffer %</span>
-                  <input name="percent" type="number" min="0" max="50" step="0.01" defaultValue={percent} className={field} />
-                </label>
-                <div className="rounded-xl bg-sand-50 px-3 py-2 text-sm">
-                  <p className="text-xs font-semibold text-ink-500 uppercase">Effective buffer</p>
-                  <p className="font-semibold text-ink-900">
-                    {buffer} {buffer === 1 ? 'room' : 'rooms'}
-                  </p>
-                  <p className="text-[11px] text-ink-500">
-                    floor({type.total_rooms} × {percent}%) = {buffer}
-                  </p>
-                  {buffer === 0 && percent > 0 && (
-                    <p className="text-[11px] font-medium text-accent-700">Rounds down to 0 rooms.</p>
-                  )}
-                </div>
-                <div className="rounded-xl bg-sand-50 px-3 py-2 text-sm">
-                  <p className="text-xs font-semibold text-ink-500 uppercase">Base max sellable</p>
-                  <p className="font-semibold text-ink-900">{Number(type.total_rooms) + buffer} rooms</p>
-                </div>
-                <button type="submit" className="btn-primary">Save</button>
-              </form>
-            );
-          })}
-        </div>
+      {tab === 'overbooking' && (
+        <section className="mt-5">
+          <p className="muted mb-3 max-w-3xl">
+            The percentage sets a base buffer of FLOOR(rooms × % / 100) extra sellable rooms. The database then adjusts it
+            night by night from the previous night’s occupancy (see Inventory plan).
+          </p>
+          <div className="table-shell">
+            <table>
+              <thead><tr><th>Hotel</th><th>Type</th><th>Rooms</th><th>Buffer %</th><th>Base buffer</th><th>Base sellable</th><th /></tr></thead>
+              <tbody>
+                {types.map((type) => {
+                  const percent = Number(type.overbook_percentage);
+                  const buffer = Math.floor((type.total_rooms * percent) / 100);
+                  return (
+                    <tr key={`${type.room_type_id}-${percent}`}>
+                      <td>{type.hotel_name}</td>
+                      <td className="font-medium text-ink-900">{type.type_name}</td>
+                      <td>{type.total_rooms}</td>
+                      <td>
+                        <form id={`policy-${type.room_type_id}`} onSubmit={(event) => void savePolicy(type, event)}>
+                          <input name="percent" type="number" min="0" max="50" step="0.01" defaultValue={percent} aria-label={`Buffer percent for ${type.type_name}`} className="input w-24" />
+                        </form>
+                      </td>
+                      <td>{buffer}{buffer === 0 && percent > 0 && <span className="ml-1 text-xs text-accent-700">(rounds to 0)</span>}</td>
+                      <td>{type.total_rooms + buffer}</td>
+                      <td className="text-right"><button type="submit" form={`policy-${type.room_type_id}`} className="btn-primary btn-sm">Save</button></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
 
       {tab === 'amenities' && (
-        <div className="mt-6">
-          {hotels.length ? (
-            <AdminAmenitiesEditor hotels={hotels} roomTypes={types} />
-          ) : (
-            <div className="card-muted p-8 text-center">
-              <p className="font-semibold text-ink-800">No hotels yet</p>
-              <p className="muted mt-1">Create a hotel in the Catalog tab before editing amenities.</p>
-            </div>
-          )}
+        <div className="mt-5">
+          <AdminAmenitiesEditor hotels={hotels} roomTypes={types} />
         </div>
       )}
 
       {tab === 'inventory' && (
-        <div className="mt-6">
+        <div className="mt-5">
           <AdminInventoryChart hotels={hotels} />
         </div>
       )}
 
       {tab === 'reports' && (
-        <div className="mt-6 space-y-5">
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <SectionHeading title="Reports" detail="Overbooking usage from MariaDB and the required amenity aggregation from MongoDB." />
-            <button type="button" onClick={() => void loadReports()} disabled={reportLoading} className="btn-secondary btn-sm">
-              <Icon name="refresh" size={14} />
-              {reportLoading ? 'Loading…' : 'Refresh reports'}
-            </button>
-          </div>
-          <div className="grid gap-5 xl:grid-cols-2">
-            <ReportTable title="Bookings relying on the overbooking buffer" rows={overbooked} />
-            <ReportTable title="Amenities by city (MongoDB aggregation)" rows={amenityReport} />
-          </div>
+        <div className="mt-5 grid gap-6 xl:grid-cols-2">
+          <section>
+            <h2 className="mb-1 text-base">Bookings using the overbooking buffer</h2>
+            <p className="muted mb-2">MariaDB · confirmed, stay not yet over</p>
+            <div className="table-shell">
+              <table>
+                <thead><tr><th>#</th><th>Hotel</th><th>Type</th><th>Guest</th><th>Stay</th></tr></thead>
+                <tbody>
+                  {overbooked.map((row) => (
+                    <tr key={row.booking_id}>
+                      <td>{row.booking_id}</td>
+                      <td>{row.hotel_name}</td>
+                      <td>{row.type_name}</td>
+                      <td>{row.first_name} {row.last_name}</td>
+                      <td className="whitespace-nowrap">{formatDate(row.check_in_date)} to {formatDate(row.check_out_date)}</td>
+                    </tr>
+                  ))}
+                  {!overbooked.length && <tr><td colSpan={5} className="text-ink-500">None right now.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </section>
+          <section>
+            <h2 className="mb-1 text-base">Amenities by city</h2>
+            <p className="muted mb-2">MongoDB aggregation · number of hotels offering each amenity</p>
+            <div className="table-shell">
+              <table>
+                <thead><tr><th>City</th><th>Amenity</th><th>Hotels</th></tr></thead>
+                <tbody>
+                  {amenityReport.map((row) => (
+                    <tr key={`${row.city}-${row.amenity}`}>
+                      <td>{row.city}</td>
+                      <td className="capitalize">{row.amenity}</td>
+                      <td>{row.hotels_offering}</td>
+                    </tr>
+                  ))}
+                  {!amenityReport.length && <tr><td colSpan={3} className="text-ink-500">No data.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </section>
         </div>
       )}
     </div>
